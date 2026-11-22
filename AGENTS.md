@@ -1,4 +1,13 @@
-# AGENTS.md — Hysteresis (native Rust rewrite)
+# AGENTS.md — synteza (formerly Hysteresis)
+
+## 2026-11-22: split
+
+Hysteresis is now two repos. This one, synteza (synteзa), keeps the Rust visualizer, the dance compiler and
+preview, and the frozen TS reference. The arm's learned body and brain (scripts/body, brain, emotion,
+body_study, compute and their docs) moved to afekt (`~/Programming/Github/afekt`), which depends on this repo.
+Work follows nonslop (`.nonslop.toml`, `/nonslop:coordinator`); current state is `docs/STATE.md`.
+The history below is the Hysteresis-era log.
+
 
 ## Current user rule — 2026-11-05: the installation is ONE arm
 

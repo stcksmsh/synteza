@@ -1,0 +1,42 @@
+# synteza (formerly Hysteresis): native Rust visualizer and dance compiler, plus the frozen TS reference.
+
+[commands]
+fmt = "cargo fmt --all"
+lint = "cargo clippy --workspace --all-targets -- -D warnings"
+# hyst-render needs a GPU; run its tests only when a slice touches it.
+test = "cargo test --workspace --exclude hyst-render"
+test_render = "cargo test -p hyst-render"
+test_ts = "npx vitest run"
+clean = "cargo clean"
+
+[slop]
+exclude = ["docs/**", "src/**", "tools/**"]
+warn = ["file-too-large"]
+
+[done]
+branch_prefix = "claude/"
+require = ["clean_tree", "pushed", "pr"]
+# No CI runs tests on this repo, so the gates run here.
+run = ["lint", "test"]
+gate_timeout_s = 1800
+auto_clean = false
+min_free_gb = 20
+stop_retries = 2
+
+[state]
+file = "docs/STATE.md"
+
+[env]
+scratch = ".claude/tmp"
+
+[rules]
+notes = [
+  "Default branch is master. Branch from origin/master.",
+  "Never edit the frozen TypeScript tree: src/ and tools/ are read-only reference.",
+  "The installation is ONE servo arm. Never build or propose several arms, ensembles or formations.",
+  "Never drive hardware or play audio on the default output without the owner's word.",
+  "afekt (github stcksmsh/afekt, ~/Programming/Github/afekt) depends on this repo: hyst-compile body*.rs, mind_state.rs, score_csv.rs, hyst-previz body_render/body_study, hyst-cli and scripts/analyze, author, dance_*. Do not change their interfaces without saying so in the PR.",
+  "Long jobs run under systemd-run --user with MemoryMax and MemorySwapMax=0. Big data lives in /secondary/hyst-data, never the root disk.",
+  "Commit messages are plain, with no attribution or co-author lines.",
+  "The owner judges motion and visuals by eye. Never claim something looks better; deliver captures.",
+]
