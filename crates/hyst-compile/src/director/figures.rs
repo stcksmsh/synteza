@@ -1848,6 +1848,7 @@ fn compile_pass(
                 // swings the nearer way round and not back through every turn.
                 let last = bearings.last().copied().unwrap_or(aimed);
                 bearings.push(last + (aimed - last + 180.0).rem_euclid(360.0) - 180.0);
+                dl("reach", &[rest_out, p[0], p[1], p[0].hypot(p[1]), on, i as f64], rest[0]);
                 reach.push([
                     lerp(rest_out, p[0].hypot(p[1]), on),
                     lerp(rest_up, p[2], on),
