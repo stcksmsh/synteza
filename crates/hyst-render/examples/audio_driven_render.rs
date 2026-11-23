@@ -10,6 +10,10 @@
 //! Run: `cargo run -p hyst-render --example audio_driven_render -- <path/to.wav>`
 //! (defaults to `~/Music/Singles/Published/hysteresis/hysteresis.wav` if no
 //! path is given — a real track on this machine, used to verify this once).
+//!
+//! `JULIA_WIDTH`/`JULIA_HEIGHT` (default 1024x1024) set the output size; the
+//! width must be a multiple of 64 (the renderer's readback alignment).
+//! `JULIA_SECONDS` (default 90) sets the clip length.
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -21,11 +25,25 @@ use hyst_render::passes::memory_field::MemoryFieldParams;
 use hyst_render::{FrameParams, GpuContext, Renderer};
 
 const FPS: f32 = 30.0;
-const DURATION_SECS: f32 = 90.0;
-const WIDTH: u32 = 1024;
-const HEIGHT: u32 = 1024;
+
+fn env_or<T: std::str::FromStr>(name: &str, default: T) -> T {
+    match std::env::var(name) {
+        Ok(v) => v
+            .parse()
+            .unwrap_or_else(|_| panic!("{name}={v:?} is not a valid number")),
+        Err(_) => default,
+    }
+}
 
 fn main() {
+    let width: u32 = env_or("JULIA_WIDTH", 1024);
+    let height: u32 = env_or("JULIA_HEIGHT", 1024);
+    let duration_secs: f32 = env_or("JULIA_SECONDS", 90.0);
+    assert!(
+        width > 0 && height > 0 && width.is_multiple_of(64),
+        "JULIA_WIDTH must be a positive multiple of 64 and JULIA_HEIGHT positive, got {width}x{height}"
+    );
+    assert!(duration_secs > 0.0, "JULIA_SECONDS must be positive");
     let wav_path = std::env::args()
         .nth(1)
         .map(PathBuf::from)
@@ -52,8 +70,7 @@ fn main() {
     let mut extractor = FeatureExtractor::new(FFT_SIZE, HOP_SIZE, wav.sample_rate as f32);
 
     let hops_per_sec = wav.sample_rate as f32 / HOP_SIZE as f32;
-    let hop_stride = (hops_per_sec / FPS).round().max(1.0) as usize;
-    let total_frames = (DURATION_SECS * FPS) as usize;
+    let total_frames = (duration_secs * FPS) as usize;
 
     // `JULIA_OUT_DIR` mirrors the sibling Mandelbulb demo's `MANDELBULB_OUT_DIR`
     // escape hatch — lets a concurrent render dodge sharing `test-output/`'s
@@ -62,9 +79,18 @@ fn main() {
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("test-output"));
     std::fs::create_dir_all(&out_dir).expect("create test-output dir");
+    // ffmpeg's frame_%04d pattern would pick up leftovers from a longer or
+    // larger earlier run.
+    for entry in std::fs::read_dir(&out_dir).expect("read output dir") {
+        let path = entry.expect("read output dir entry").path();
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if name.starts_with("frame_") && name.ends_with(".ppm") {
+            std::fs::remove_file(&path).expect("remove stale frame");
+        }
+    }
 
     let ctx = GpuContext::new_blocking().expect("no GPU adapter available — cannot render");
-    let mut renderer = Renderer::new(&ctx, WIDTH, HEIGHT);
+    let mut renderer = Renderer::new(&ctx, width, height);
 
     let mut hop_count = 0usize;
     let mut frame_index = 0usize;
@@ -84,9 +110,9 @@ fn main() {
     let mut julia_driver = JuliaDriver::new();
 
     // Feed the whole track's samples through in HOP_SIZE-sized pushes so
-    // `push_samples` yields exactly one SignalBus per hop, then render every
-    // `hop_stride`-th hop as a video frame until we have enough for
-    // DURATION_SECS at FPS.
+    // `push_samples` yields exactly one SignalBus per hop, then render a
+    // video frame whenever the audio clock passes the next frame time, until
+    // we have enough for duration_secs at FPS.
     'outer: for chunk in mono.chunks(HOP_SIZE) {
         let buses = extractor.push_samples(chunk);
         for bus in buses {
@@ -104,17 +130,23 @@ fn main() {
             last_beat_phase = bus.beat_phase;
             beat_pulse *= 0.85;
 
-            if hop_count.is_multiple_of(hop_stride) {
+            // Emit a frame once the count of SignalBus hops reaches the next
+            // frame's time, so the video does not drift against the track (a
+            // rounded fixed hop stride does: 3 hops per frame is 28.7 fps at
+            // 44.1 kHz). Hops lag the true sample position by a constant ~3
+            // hops (~35 ms) while the extractor's window first fills.
+            if hop_count as f32 / hops_per_sec >= frame_index as f32 / FPS {
                 let julia = julia_driver.update(dt, &bus);
-                let params = frame_params(&bus, t, beat_pulse, julia, chunk);
+                let aspect = width as f32 / height as f32;
+                let params = frame_params(&bus, t, beat_pulse, julia, chunk, aspect);
                 let pixels = renderer
                     .render_frame(&ctx, &params)
                     .expect("render_frame failed");
                 write_ppm(
                     &out_dir.join(format!("frame_{frame_index:04}.ppm")),
                     &pixels,
-                    WIDTH,
-                    HEIGHT,
+                    width,
+                    height,
                 );
                 frame_index += 1;
                 t += dt;
@@ -258,6 +290,7 @@ fn frame_params(
     beat_pulse: f32,
     julia: hyst_render::passes::julia::JuliaNavState,
     hop_samples: &[f32],
+    aspect: f32,
 ) -> FrameParams {
     FrameParams {
         julia,
@@ -267,7 +300,7 @@ fn frame_params(
             // full 45s compounded into an ever-softening blur. 0.55-0.75
             // still gives real memory/smear, just shorter-lived.
             decay: 0.55 + 0.2 * bus.sub,
-            aspect: 1.0,
+            aspect,
             flow_uv: [t * 0.03, 0.0],
             flow_scale: 2.0,
             flow_strength: 0.01 + 0.05 * bus.sub,
