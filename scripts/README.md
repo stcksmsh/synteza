@@ -56,7 +56,7 @@ same JSON:
 - Tests: `/secondary/hyst-env/analyze-py/bin/python -m pytest scripts/analyze -q` (synthetic only).
 - Equivalence against the TS analyzer: `scripts/analyze/equiv/run_equiv.sh OUT NAME=WAV ...`
   (needs `node_modules`; runs both, times them, compares with `equiv/compare.py`).
-  Rule and results: `docs/DANCE_HANDOFF.md`, entry 2026-10-23.
+  Rule and results: afekt's `docs/DANCE_HANDOFF.md` (github stcksmsh/afekt), entry 2026-10-23.
 - To switch `song.sh`: replace `npx tsx scripts/analyze.ts "$wav" "$D/$slug.sidecar.json"` by
   `/secondary/hyst-env/analyze-py/bin/python scripts/analyze.py "$wav" "$D/$slug.sidecar.json"`.
 
