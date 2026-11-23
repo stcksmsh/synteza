@@ -2,8 +2,9 @@
 
 ## 2026-11-22: split
 
-Hysteresis is now two repos. This one, synteza (synteзa), keeps the Rust visualizer, the dance compiler and
-preview, and the frozen TS reference. The arm's learned body and brain (scripts/body, brain, emotion,
+Hysteresis is now two repos. This one, synteza (synteзa), keeps the Rust visualizer and the frozen TS
+reference. The dance compiler, preview and CLI (hyst-compile, hyst-previz, hyst-cli, scripts/author,
+scripts/dance_*) moved to afekt on 2026-11-23 (S0, stcksmsh/afekt#6). The arm's learned body and brain (scripts/body, brain, emotion,
 body_study, compute and their docs) moved to afekt (`~/Programming/Github/afekt`), which depends on this repo.
 Work follows nonslop (`.nonslop.toml`, `/nonslop:coordinator`); current state is `docs/STATE.md`.
 The history below is the Hysteresis-era log.

@@ -1,5 +1,11 @@
 # What afekt uses from synteza (inventory before step S0)
 
+**Done 2026-11-23 (WO-3).** `crates/hyst-compile`, `crates/hyst-previz`, `crates/hyst-cli`, `scripts/author/`,
+`scripts/dance_*.py` with their tests, `scripts/instant_crush.acceptance.json` and the dance docs (`docs/B_WORKSPACE*.md`,
+`docs/DANCE_*.md`) were copied to afekt from synteza 7675ce4 and removed here. afekt has its own Cargo workspace; it still
+takes `scripts/analyze.py` and hyst-audio's `beat_pll` example from synteza through `SYNTEZA_DIR`. hyst-compile's unused
+`hyst-core` dependency was dropped. The inventory below describes the state before the move.
+
 Read-only inventory, 2026-11-23, synteza checked against fccad14, afekt checkout `~/Programming/Github/afekt` (all
 afekt paths below are relative to its root). Method: `grep -rn` over afekt `scripts/`, `AGENTS.md`, `.nonslop.toml` for
 `synteza|SYNTEZA|crates/|hyst-<crate>|hyst_<crate>|cargo |ensemble_preview|body_study|body_render|score_csv|mind_state|analyze|dance_|author/`;
