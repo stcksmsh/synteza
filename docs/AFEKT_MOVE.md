@@ -1,6 +1,6 @@
 # What afekt uses from synteza (inventory before step S0)
 
-Read-only inventory, 2026-11-23, synteza `origin/master` at fccad14, afekt checkout `~/Programming/Github/afekt` (all
+Read-only inventory, 2026-11-23, synteza checked against fccad14, afekt checkout `~/Programming/Github/afekt` (all
 afekt paths below are relative to its root). Method: `grep -rn` over afekt `scripts/`, `AGENTS.md`, `.nonslop.toml` for
 `synteza|SYNTEZA|crates/|hyst-<crate>|hyst_<crate>|cargo |ensemble_preview|body_study|body_render|score_csv|mind_state|analyze|dance_|author/`;
 `grep` of synteza `crates/*/Cargo.toml` and `use hyst_*` in `crates/**/*.rs`. afekt `docs/` (about 100 prompt, brief and
@@ -84,6 +84,13 @@ Facts only; `Cargo.toml`/`Cargo.lock` workspace edits are owned by another build
 - CI: `grep -nE 'compile|previz|cli' .github/workflows/*` found no match. `.nonslop.toml` fmt/lint/test commands are
   workspace-wide.
 
+## Cargo workspace inheritance
+
+The three moving crates inherit from the synteza workspace: `version.workspace`, `edition.workspace`, and `serde`,
+`serde_json`, `hyst-core` as `.workspace` dependencies (`crates/hyst-compile/Cargo.toml`, `hyst-previz`, `hyst-cli`).
+afekt's new workspace must define these, or the three `Cargo.toml` files must be rewritten. hyst-compile's `hyst-core`
+dependency is unused (no `use hyst_core` in `crates/hyst-compile`).
+
 ## Types to copy or share
 
 afekt has no Rust, so no `hyst-core` type is used by afekt today. `hyst-compile` itself does not use `hyst-core` in source
@@ -112,7 +119,10 @@ Depend on the three movers (cargo `-p hyst-previz` / `hyst-cli`, or their binari
 change their path:
 
 - `scripts/author/retune.sh:27` (`cargo build -p hyst-previz --example ensemble_preview`), `author/attach.py:62`
-  (`cargo run ... ensemble_preview`), `author/wo7_renders.sh` (own CARGO_TARGET_DIR), `author/tuning_check.sh` (not read).
+  (`cargo run ... ensemble_preview`). Files that only name the movers: `author/author_core.cjs:115` (comment),
+  `author/README.md` (lines 41, 52, 73, 81, 83, 91), `author/test_attach.py:11` (reads `crates/hyst-compile/tests/fixtures/bodytrack_author.json`).
+  `author/wo7_renders.sh` only exports `CARGO_TARGET_DIR` (line 9) and `author/tuning_check.sh` has no cargo or
+  ensemble_preview reference: neither depends on the movers.
 - `scripts/author/record_ensemble.cjs` records an `ensemble_preview` page; it has no cargo call, but afekt uses it
   with pages built by the movers (14 call sites above).
 
@@ -137,22 +147,25 @@ reaches them through `SYNTEZA_DIR`; `hyst-audio`'s `beat_pll` (used by `check_b1
 2. afekt has no Cargo workspace. After the move afekt needs one, and its scripts still carry `cargo build ... -p hyst-previz`
    with `cwd` = synteza (`emotion/render.py:34-35`, `brain/check_b1.py:49` for hyst-audio, shells `cd "$SYNTEZA" && cargo build`
    at `k5_render.sh:26`, `k5p2_render.sh:31`, `v47_regression.sh:11`, `hf_v47.sh:11`). Every `cd "$SYNTEZA" && cargo build -p
-   hyst-previz|hyst-cli` site breaks on the move. `hyst-audio`'s `beat_pll` build (`check_b1.py:49`) stays valid.
+   hyst-previz|hyst-cli` site breaks on the move. `hyst-audio`'s `beat_pll` build (`check_b1.py:49`) stays valid. `scripts/body_study/render.sh:13` hard-codes
+   `$SYNTEZA/target/release/examples/body_study`; it runs a prebuilt binary and builds nothing, so it breaks when that
+   path stops existing.
 3. `scripts/author/record_ensemble.cjs:8` requires `puppeteer-core` from the old path
    `/secondary/Programming/Github/Hysteresis/node_modules`; afekt `scripts/body_study/test_answer.cjs:5` requires
    `/home/stcksmsh/Programming/Github/Hysteresis/node_modules`. Both point at the pre-split checkout (exists or not: not
    checked). Unrelated to the move itself, but both break if that checkout goes.
 4. Hard-coded prebuilt target dirs outside any checkout: `/secondary/hyst-data/cargo-target-wo12/release` (`s0_v47_song.sh:12`,
    `k5p2_eval.py:47`), `/secondary/hyst-env/cargo-target-body/debug/hyst` (`test_body.py:19`),
-   `/secondary/hyst-data/cargo-target-dial`, `cargo-target-tuning`, `cargo-target-wo7`. These keep working only while
+   `/secondary/hyst-data/cargo-target-dial` (`body/jitter_viewing.py:23`), `cargo-target-wo12` (`body/m3f_clips.py:27`,
+   `body/s3_sidecar.py:37`), `cargo-target-tuning`, `cargo-target-wo7`. These keep working only while
    a binary is built into them from the new location.
 5. `body/s0_v47_song.sh:17` does `cd "$SYNTEZA"` and runs `scripts/analyze.py` and `scripts/dance_*.py` by relative path:
    breaks if those scripts leave synteza without the `SYNTEZA` variable being repointed (open: where they end up).
 6. `ensemble_preview` v47 regression path (`--ring 6,0.8`, mode Off) is the byte-identical reference for the hexagon
    exports (`AGENTS.md`, `scripts/body/v47_regression.sh`, `docs/B_WORKSPACE.md`); the flags are used by afekt
    (`s0_v47_song.sh:35`, `hf_v47.sh`) and must survive the move unchanged.
-7. `scripts/author/retune.sh`, `attach.py`, `tuning_check.sh`, `wo7_renders.sh`: synteza-owned, depend on `hyst-previz`;
-   not decided whether they move (see above). `tuning_check.sh` and `wo7_renders.sh` were not read in full.
+7. `scripts/author/retune.sh` and `attach.py` depend on `hyst-previz`; `test_attach.py` and `author_core.cjs`/`README.md`
+   name hyst-compile paths. Not decided whether they move (see above).
 8. The interface list the project asks to keep stable (`.nonslop.toml:38`) matches what was found: `hyst-compile` `body*.rs`,
    `mind_state.rs`, `score_csv.rs`; `hyst-previz` `body_render`/`body_study`; `hyst-cli`. Beyond that list afekt also
    depends on `ensemble_preview` and its flags, `ensemble.html`, `body_track.rs`, `ensemble.rs` `Rig` numbers,
