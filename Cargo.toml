@@ -6,10 +6,7 @@ members = [
   "crates/hyst-render",
   "crates/hyst-script",
   "crates/hyst-choreo",
-  "crates/hyst-compile",
   "crates/hyst-output",
-  "crates/hyst-previz",
-  "crates/hyst-cli",
 ]
 
 [workspace.package]
@@ -18,7 +15,6 @@ edition = "2021"
 
 [workspace.dependencies]
 hyst-core = { path = "crates/hyst-core" }
-libm = "0.2.16"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "1"
