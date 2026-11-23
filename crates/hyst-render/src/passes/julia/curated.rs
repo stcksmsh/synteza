@@ -204,6 +204,8 @@ mod tests {
         let mut d = CuratedJuliaDriver::new();
         let dt = 1.0 / 30.0;
         let mut prev_c: Option<[f32; 2]> = None;
+        let mut prev_zoom: Option<f32> = None;
+        let mut prev_pan: Option<[f32; 2]> = None;
         let mut visited = [false; CURATED_C.len()];
         for i in 0..(30 * 120) {
             let e = if (i / 7) % 2 == 0 { 0.9 } else { 0.1 };
@@ -230,6 +232,25 @@ mod tests {
                 assert!(step < 0.01, "c jumped {step} at frame {i}");
             }
             prev_c = Some(s.c);
+            // Zoom moves no faster than the pullback rate, in log space.
+            if let Some(z) = prev_zoom {
+                let step = (s.zoom.ln() - z.ln()).abs();
+                assert!(
+                    step <= CURATED_PULLBACK_RATE * dt * 1.01,
+                    "zoom jumped {step} (log) at frame {i}"
+                );
+            }
+            prev_zoom = Some(s.zoom);
+            // Pan moves at most a fixed fraction of the current view per frame.
+            if let Some(p) = prev_pan {
+                let step = ((s.pan[0] - p[0]).powi(2) + (s.pan[1] - p[1]).powi(2)).sqrt();
+                assert!(
+                    step <= PAN_STEP_FRAC * s.zoom * 1.01,
+                    "pan jumped {} views at frame {i}",
+                    step / s.zoom
+                );
+            }
+            prev_pan = Some(s.pan);
         }
         assert!(visited.iter().all(|&v| v), "visited {visited:?}");
     }

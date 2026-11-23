@@ -30,6 +30,14 @@ pub enum Look {
     After,
 }
 
+/// The bloom targets each look needs: `Before` blurs at full resolution in
+/// 8 bits, `After` uses the HDR mip chain.
+enum Bloom {
+    /// Bright pass, horizontal blur, vertical blur.
+    Single(Box<[OffscreenTarget; 3]>),
+    Chain(Box<BloomChain>),
+}
+
 /// Per-frame knobs a caller (a driven test, or eventually `hyst-audio`
 /// signals) sets; everything else about the pipeline's shape is fixed.
 pub struct FrameParams {
@@ -68,10 +76,7 @@ pub struct Renderer {
     field_b: OffscreenTarget,
     field_is_a: bool,
     persistence_prev: OffscreenTarget,
-    bright: OffscreenTarget,
-    blur_h: OffscreenTarget,
-    blur_v: OffscreenTarget,
-    bloom_chain: Option<BloomChain>,
+    bloom: Bloom,
     composited: OffscreenTarget,
     final_out: OffscreenTarget,
     frame_index: u32,
@@ -111,10 +116,12 @@ impl Renderer {
             field_b: field(ctx, width, height),
             field_is_a: true,
             persistence_prev: field(ctx, width, height),
-            bright: field(ctx, width, height),
-            blur_h: field(ctx, width, height),
-            blur_v: field(ctx, width, height),
-            bloom_chain: (look == Look::After).then(|| BloomChain::new(ctx, width, height)),
+            bloom: match look {
+                Look::Before => Bloom::Single(Box::new(std::array::from_fn(|_| {
+                    OffscreenTarget::new(ctx, width, height)
+                }))),
+                Look::After => Bloom::Chain(Box::new(BloomChain::new(ctx, width, height))),
+            },
             composited: field(ctx, width, height),
             final_out: OffscreenTarget::new(ctx, width, height),
             frame_index: 0,
@@ -191,36 +198,39 @@ impl Renderer {
         )?;
         copy_texture(ctx, &self.composited, &self.persistence_prev);
 
-        if let Some(chain) = &self.bloom_chain {
-            let bloom =
-                chain.render(ctx, &self.composited, &self.sampler, params.bloom_threshold)?;
-            render_composite_hdr(
-                ctx,
-                &self.final_out,
-                &self.composited,
-                bloom,
-                &self.sampler,
-                [params.bloom_strength, params.exposure],
-                self.frame_index,
-            )?;
-            return self.final_out.read_pixels(ctx);
-        }
+        let [bright, blur_h, blur_v] = match &self.bloom {
+            Bloom::Single(targets) => &**targets,
+            Bloom::Chain(chain) => {
+                let bloom =
+                    chain.render(ctx, &self.composited, &self.sampler, params.bloom_threshold)?;
+                render_composite_hdr(
+                    ctx,
+                    &self.final_out,
+                    &self.composited,
+                    bloom,
+                    &self.sampler,
+                    [params.bloom_strength, params.exposure],
+                    self.frame_index,
+                )?;
+                return self.final_out.read_pixels(ctx);
+            }
+        };
 
         render_bright_pass(
             ctx,
-            &self.bright,
+            bright,
             &self.composited,
             &self.sampler,
             params.bloom_threshold,
         )?;
-        render_blur(ctx, &self.blur_h, &self.bright, &self.sampler, [1.0, 0.0])?;
-        render_blur(ctx, &self.blur_v, &self.blur_h, &self.sampler, [0.0, 1.0])?;
+        render_blur(ctx, blur_h, bright, &self.sampler, [1.0, 0.0])?;
+        render_blur(ctx, blur_v, blur_h, &self.sampler, [0.0, 1.0])?;
 
         render_composite(
             ctx,
             &self.final_out,
             &self.composited,
-            Some(&self.blur_v),
+            Some(blur_v),
             &self.sampler,
             params.bloom_strength,
             params.exposure,
