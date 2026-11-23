@@ -310,7 +310,11 @@ fn main() -> io::Result<()> {
                     Some("ball") => hyst_compile::ensemble::Implement::mirror_ball(),
                     Some("lamp") => hyst_compile::ensemble::Implement::lamp(),
                     Some("gripper") => hyst_compile::ensemble::Implement::gripper(),
-                    _ => return Err(io::Error::other("--implement requires ball, disc, lamp or gripper")),
+                    _ => {
+                        return Err(io::Error::other(
+                            "--implement requires ball, disc, lamp or gripper",
+                        ))
+                    }
                 })
             }
             "--ring" => {

@@ -58,14 +58,35 @@ impl Mirror {
     /// Greatest distance of any part of the outline from the hand point.
     fn reach_m(&self) -> f64 {
         let c = std::f64::consts::FRAC_1_SQRT_2;
-        let corner = if self.sides == 4 { (c * c * (1.0 + self.aspect * self.aspect)).sqrt() } else { self.aspect.max(1.0) };
+        let corner = if self.sides == 4 {
+            (c * c * (1.0 + self.aspect * self.aspect)).sqrt()
+        } else {
+            self.aspect.max(1.0)
+        };
         dot(self.centre_m, self.centre_m).sqrt() + self.half_size_m * corner
     }
 
     /// A flat rectangle (visual only): half extents `hu` along `u`, `hv` along the normal-cross-u axis.
-    fn rect(centre_m: [f64; 3], normal: [f64; 3], u: [f64; 3], hu: f64, hv: f64, colour: [u8; 3], both_faces: bool) -> Self {
+    fn rect(
+        centre_m: [f64; 3],
+        normal: [f64; 3],
+        u: [f64; 3],
+        hu: f64,
+        hv: f64,
+        colour: [u8; 3],
+        both_faces: bool,
+    ) -> Self {
         let c = std::f64::consts::FRAC_1_SQRT_2;
-        Self { centre_m, normal, u, half_size_m: hu / c, sides: 4, both_faces, aspect: hv / hu, matte: Some(colour) }
+        Self {
+            centre_m,
+            normal,
+            u,
+            half_size_m: hu / c,
+            sides: 4,
+            both_faces,
+            aspect: hv / hu,
+            matte: Some(colour),
+        }
     }
 }
 
@@ -108,8 +129,13 @@ impl Implement {
     }
 
     fn matte_shape(name: &str, parts: Vec<Mirror>) -> Self {
-        let radius_m = (parts.iter().map(Mirror::reach_m).fold(0.0, f64::max) * 1000.0).ceil() / 1000.0;
-        Self { name: name.into(), radius_m, mirrors: parts }
+        let radius_m =
+            (parts.iter().map(Mirror::reach_m).fold(0.0, f64::max) * 1000.0).ceil() / 1000.0;
+        Self {
+            name: name.into(),
+            radius_m,
+            mirrors: parts,
+        }
     }
 
     /// A lamp head: ten-panel conical shade opening along the last link, a lit face at its mouth. Visual only.
@@ -121,7 +147,15 @@ impl Implement {
                 let (rho, tau) = ([0.0, a.cos(), a.sin()], [0.0, -a.sin(), a.cos()]);
                 let n = [-0.3, 0.95 * rho[1], 0.95 * rho[2]];
                 let k = dot(n, n).sqrt();
-                Mirror::rect([0.01, 0.0375 * rho[1], 0.0375 * rho[2]], n.map(|v| v / k), tau, 0.013, 0.041, shade, true)
+                Mirror::rect(
+                    [0.01, 0.0375 * rho[1], 0.0375 * rho[2]],
+                    n.map(|v| v / k),
+                    tau,
+                    0.013,
+                    0.041,
+                    shade,
+                    true,
+                )
             })
             .collect();
         parts.push(Mirror {
@@ -153,8 +187,24 @@ impl Implement {
         ];
         for fz in [-0.033, 0.0, 0.033] {
             // Bar of 0.06 x 0.012 x 0.012: two crossed plates.
-            parts.push(Mirror::rect([0.03, 0.0, fz], y, x, 0.03, 0.006, finger, true));
-            parts.push(Mirror::rect([0.03, 0.0, fz], z, x, 0.03, 0.006, finger, true));
+            parts.push(Mirror::rect(
+                [0.03, 0.0, fz],
+                y,
+                x,
+                0.03,
+                0.006,
+                finger,
+                true,
+            ));
+            parts.push(Mirror::rect(
+                [0.03, 0.0, fz],
+                z,
+                x,
+                0.03,
+                0.006,
+                finger,
+                true,
+            ));
         }
         Self::matte_shape("gripper", parts)
     }
@@ -865,7 +915,12 @@ mod tests {
     fn lamp_and_gripper_are_valid_matte_shapes_and_ball_json_is_unchanged() {
         let mut rig = Rig::illustrative_five_axis();
         for hand in [Implement::lamp(), Implement::gripper()] {
-            assert!(hand.radius_m < 0.12, "{} radius {}", hand.name, hand.radius_m);
+            assert!(
+                hand.radius_m < 0.12,
+                "{} radius {}",
+                hand.name,
+                hand.radius_m
+            );
             assert!(hand.mirrors.iter().all(|m| m.matte.is_some()));
             rig.implement = hand;
             rig.validate().unwrap();
