@@ -5,5 +5,9 @@ edition.workspace = true
 
 [dependencies]
 hyst-core.workspace = true
+# Every transcendental call (sin, exp, hypot, pow, ...) goes through the pure-Rust
+# libm, not the platform one: glibc gives different last bits on different
+# machines, and the golden digests need bit-identical scores everywhere.
+libm.workspace = true
 serde.workspace = true
 serde_json.workspace = true

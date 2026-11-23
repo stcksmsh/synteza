@@ -26,9 +26,9 @@ pub(super) struct Layer<'a> {
 /// 1 at x = 0.5, `lo` at 0 and `hi` at 1, geometric between.
 pub(super) fn geo(x: f64, lo: f64, hi: f64) -> f64 {
     if x < 0.5 {
-        lo.powf(1.0 - 2.0 * x)
+        libm::pow(lo, 1.0 - 2.0 * x)
     } else {
-        hi.powf(2.0 * x - 1.0)
+        libm::pow(hi, 2.0 * x - 1.0)
     }
 }
 
@@ -69,7 +69,7 @@ pub(super) const FOLLOW_ACCEL: f64 = 0.3;
 pub(super) fn kick(time: f64, phase: f64) -> f64 {
     const POWER: i32 = 3;
     const MEAN: f64 = 20.0 / 64.0; // mean of ((1 + cos 2 pi x) / 2)^3 over a beat
-    let bump = (0.5 * (1.0 + (TAU * phase).cos())).powi(POWER);
+    let bump = libm::pow(0.5 * (1.0 + libm::cos(TAU * phase)), f64::from(POWER));
     1.0 + KICK * upper(time) * (bump - MEAN)
 }
 
@@ -164,7 +164,7 @@ pub(super) fn demand(score: &EnsembleScore, grid: &[f64]) -> Vec<f64> {
         .windows(2)
         .map(|w| {
             (0..3)
-                .map(|k| (w[1][k] - w[0][k]).powi(2))
+                .map(|k| libm::pow(w[1][k] - w[0][k], 2.0))
                 .sum::<f64>()
                 .sqrt()
                 * fps
@@ -209,7 +209,7 @@ pub(super) fn slower(
             let (mut sum, mut total) = (0.0, 0.0);
             let r = (3.0 * sigma).ceil() as isize;
             for d in -r..=r {
-                let w = (-0.5 * (d as f64 / sigma).powi(2)).exp();
+                let w = libm::exp(-0.5 * libm::pow(d as f64 / sigma, 2.0));
                 sum += w * low[(i as isize + d).clamp(0, n as isize - 1) as usize];
                 total += w;
             }

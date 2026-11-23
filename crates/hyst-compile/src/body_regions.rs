@@ -14,7 +14,7 @@ pub const SEED_ORDER: u64 = 20_261_015;
 pub fn dist(a: &[f64], b: &[f64]) -> f64 {
     a.iter()
         .zip(b)
-        .map(|(x, y)| (x - y).powi(2))
+        .map(|(x, y)| libm::pow(x - y, 2.0))
         .sum::<f64>()
         .sqrt()
 }
@@ -294,7 +294,7 @@ mod tests {
                     c.to_vec()
                 } else {
                     let a = i as f64 * std::f64::consts::TAU / (CLIPS_PER_REGION - 1) as f64;
-                    vec![c[0] + w * a.cos(), c[1] + w * a.sin()]
+                    vec![c[0] + w * libm::cos(a), c[1] + w * libm::sin(a)]
                 }
             })
             .collect()
