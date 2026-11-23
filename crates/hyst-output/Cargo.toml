@@ -2,6 +2,7 @@
 name = "hyst-output"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 
 [dependencies]
 hyst-core.workspace = true
