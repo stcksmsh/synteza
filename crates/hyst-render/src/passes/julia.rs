@@ -377,6 +377,7 @@ impl ColourEnv {
 
 mod curated;
 pub use curated::{CuratedJuliaDriver, CURATED_C, DIRECT_ZOOM_MIN};
+pub mod song;
 
 /// Fixed golden-angle-spread circle `driven_by_time`/`JuliaDriver` both
 /// place discrete region centers on: same `c = [-0.4 + 0.35*cos(angle),

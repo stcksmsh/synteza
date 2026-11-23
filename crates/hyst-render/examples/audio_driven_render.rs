@@ -27,12 +27,32 @@
 //! rises while the ~2 s envelope sits above the ~20 s one (energy climbing
 //! toward a peak), `suspension` while it sits below (a break). At rest
 //! both are zero and decay is 0.86.
+//!
+//! `JULIA_SONG=off|on` (default `off`, `after` look only). `off` is the
+//! after look above, unchanged. `on` first measures the whole track
+//! ([`hyst_render::passes::julia::song`]): a calm song gets smaller, slower
+//! reactions, loudness is read relative to the song's own loud passages,
+//! and with a sidecar (`JULIA_SIDECAR=path`, from `scripts/analyze`) each
+//! section gets its own eased sub-look. Without a sidecar, `on` applies
+//! only the calmness.
+//!
+//! `JULIA_FREEZE=<element>` (after look, song off) freezes one fast
+//! reaction for diagnosis: `jitter`, `beat`, `beam_size`, `c_jumps`,
+//! `bloom`, `fold`, `flow`, `wobble`, `palette`, `drive`, `pan`.
+//!
+//! After a successful ffmpeg encode the raw frames are deleted unless
+//! `JULIA_KEEP_FRAMES=1`. `JULIA_CRF` passes a constant rate factor to
+//! ffmpeg (its default otherwise).
 
 use std::io::Write;
 use std::path::PathBuf;
 
 use hyst_audio::{FeatureExtractor, WavSource};
+use hyst_core::Sidecar;
 use hyst_render::passes::beam::Segment;
+use hyst_render::passes::julia::song::{
+    onset_rate, sections_from_sidecar, Blend, Reactor, SectionTrack, SongCharacter, TrackFeatures,
+};
 use hyst_render::passes::julia::{CuratedJuliaDriver, JuliaDriver};
 use hyst_render::passes::memory_field::MemoryFieldParams;
 use hyst_render::renderer::Look;
@@ -64,6 +84,33 @@ fn main() {
         Ok(other) => panic!("JULIA_LOOK must be before or after, got {other:?}"),
         Err(e) => panic!("JULIA_LOOK: {e}"),
     };
+    let song_on = match std::env::var("JULIA_SONG").as_deref() {
+        Ok("on") => true,
+        Ok("off") | Err(std::env::VarError::NotPresent) => false,
+        Ok(other) => panic!("JULIA_SONG must be off or on, got {other:?}"),
+        Err(e) => panic!("JULIA_SONG: {e}"),
+    };
+    assert!(
+        !song_on || look == Look::After,
+        "JULIA_SONG=on needs the after look"
+    );
+    let freeze = std::env::var("JULIA_FREEZE").ok();
+    if let Some(f) = &freeze {
+        assert!(
+            FREEZABLE.contains(&f.as_str()),
+            "JULIA_FREEZE must be one of {FREEZABLE:?}, got {f:?}"
+        );
+        assert!(
+            look == Look::After && !song_on,
+            "JULIA_FREEZE needs the after look with JULIA_SONG=off"
+        );
+    }
+    let frozen = |name: &str| freeze.as_deref() == Some(name);
+    let keep_frames = std::env::var("JULIA_KEEP_FRAMES").as_deref() == Ok("1");
+    let crf: Option<u32> = std::env::var("JULIA_CRF").ok().map(|v| {
+        v.parse()
+            .unwrap_or_else(|_| panic!("JULIA_CRF={v:?} is not a number"))
+    });
     let wav_path = std::env::args()
         .nth(1)
         .map(PathBuf::from)
@@ -90,6 +137,42 @@ fn main() {
     let mut extractor = FeatureExtractor::new(FFT_SIZE, HOP_SIZE, wav.sample_rate as f32);
 
     let hops_per_sec = wav.sample_rate as f32 / HOP_SIZE as f32;
+
+    // JULIA_SONG=on: measure the whole track first, with its own extractor,
+    // so the render pass below starts from the same state as with it off.
+    let mut song = song_on.then(|| {
+        let character = measure_track(&mono, wav.sample_rate as f32, FFT_SIZE, HOP_SIZE);
+        let track = std::env::var_os("JULIA_SIDECAR").map(|path| {
+            let text = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("read JULIA_SIDECAR {path:?}: {e}"));
+            let sidecar = Sidecar::from_json_str(&text)
+                .unwrap_or_else(|e| panic!("parse JULIA_SIDECAR {path:?}: {e}"));
+            let sections = sections_from_sidecar(&sidecar, character.calm);
+            println!("sections (start-end s, kind, level, look):");
+            for (i, s) in sections.iter().enumerate() {
+                println!(
+                    "  {i:2} {:6.1}-{:6.1} {:?} level {:.2} {:?}{}",
+                    s.start,
+                    s.end,
+                    s.kind,
+                    s.level,
+                    s.look,
+                    s.repeats.map_or(String::new(), |j| format!(" repeats {j}"))
+                );
+            }
+            SectionTrack::new(sections)
+        });
+        SongState {
+            reactor: Reactor::new(character),
+            track,
+            beam_phase: 0.0,
+        }
+    });
+    // Per-hop decay of the beat pulse: slower for a calmer song.
+    let pulse_decay: f32 = match &song {
+        Some(s) => 0.85f32.powf(1.0 / s.reactor.character.slow()),
+        None => 0.85,
+    };
     let total_frames = (duration_secs * FPS) as usize;
 
     // `JULIA_OUT_DIR` mirrors the sibling Mandelbulb demo's `MANDELBULB_OUT_DIR`
@@ -101,13 +184,7 @@ fn main() {
     std::fs::create_dir_all(&out_dir).expect("create test-output dir");
     // ffmpeg's frame_%04d pattern would pick up leftovers from a longer or
     // larger earlier run.
-    for entry in std::fs::read_dir(&out_dir).expect("read output dir") {
-        let path = entry.expect("read output dir entry").path();
-        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-        if name.starts_with("frame_") && name.ends_with(".ppm") {
-            std::fs::remove_file(&path).expect("remove stale frame");
-        }
-    }
+    remove_frames(&out_dir);
 
     let ctx = GpuContext::new_blocking().expect("no GPU adapter available — cannot render");
     let mut renderer = Renderer::with_look(&ctx, width, height, look);
@@ -129,6 +206,10 @@ fn main() {
     // evolve or react to music").
     let mut julia_driver = JuliaDriver::new();
     let mut curated_driver = CuratedJuliaDriver::new();
+    // With sections, `c` moves at section changes instead of energy jumps.
+    let sections_drive_c = song.as_ref().is_some_and(|s| s.track.is_some());
+    curated_driver.set_energy_jumps(!frozen("c_jumps") && !sections_drive_c);
+    curated_driver.set_pan_steer(!frozen("pan"));
     let mut structure = EnergyStructure::default();
 
     // Feed the whole track's samples through in HOP_SIZE-sized pushes so
@@ -150,7 +231,7 @@ fn main() {
                 beat_pulse = 1.0;
             }
             last_beat_phase = bus.beat_phase;
-            beat_pulse *= 0.85;
+            beat_pulse *= pulse_decay;
 
             // Emit a frame once the count of SignalBus hops reaches the next
             // frame's time, so the video does not drift against the track (a
@@ -164,12 +245,49 @@ fn main() {
                         let julia = julia_driver.update(dt, &bus);
                         frame_params(&bus, t, beat_pulse, julia, chunk, aspect)
                     }
-                    Look::After => {
-                        let julia = curated_driver.update(dt, &bus);
-                        structure.update(dt, bus.energy);
-                        let base = frame_params(&bus, t, beat_pulse, julia, chunk, aspect);
-                        after_frame_params(base, &bus, &structure)
-                    }
+                    Look::After => match &mut song {
+                        Some(song) => song_frame_params(
+                            song,
+                            &mut curated_driver,
+                            &mut structure,
+                            &bus,
+                            [t, dt, aspect],
+                            beat_pulse,
+                            chunk,
+                        ),
+                        None => {
+                            let mut drive_bus = bus.clone();
+                            if frozen("palette") {
+                                drive_bus.chroma_root_hue = 0.0;
+                                drive_bus.centroid = 0.5;
+                                drive_bus.flatness = 0.3;
+                            }
+                            if frozen("drive") {
+                                drive_bus.energy = 0.5;
+                            }
+                            let julia = curated_driver.update(dt, &drive_bus);
+                            structure.update(dt, bus.energy);
+                            let pulse = if frozen("beat") { 0.0 } else { beat_pulse };
+                            let samples: &[f32] = if frozen("jitter") { &[] } else { chunk };
+                            let base = frame_params(&bus, t, pulse, julia, samples, aspect);
+                            let wobble = if frozen("wobble") { 0.0 } else { 1.0 };
+                            let mut p = after_frame_params(base, &bus, &structure, wobble);
+                            if frozen("beam_size") {
+                                p.beam_segments =
+                                    lissajous_segments(t * 0.6, 0.5, samples, JITTER_AMP);
+                            }
+                            if frozen("bloom") {
+                                p.bloom_strength = 0.15 + 0.25 * 0.5;
+                            }
+                            if frozen("fold") {
+                                p.memory_field.mirror_strength = 0.0;
+                            }
+                            if frozen("flow") {
+                                p.memory_field.flow_strength = 0.01 + 0.05 * 0.5;
+                            }
+                            p
+                        }
+                    },
                 };
                 let pixels = renderer
                     .render_frame(&ctx, &params)
@@ -193,21 +311,28 @@ fn main() {
 
     if which_ffmpeg().is_some() {
         let mp4_path = out_dir.join("audio_driven_render.mp4");
-        let status = std::process::Command::new("ffmpeg")
-            .args([
-                "-y",
-                "-framerate",
-                &FPS.to_string(),
-                "-i",
-                out_dir.join("frame_%04d.ppm").to_str().unwrap(),
-                "-pix_fmt",
-                "yuv420p",
-                mp4_path.to_str().unwrap(),
-            ])
+        let mut cmd = std::process::Command::new("ffmpeg");
+        cmd.args([
+            "-y",
+            "-framerate",
+            &FPS.to_string(),
+            "-i",
+            out_dir.join("frame_%04d.ppm").to_str().unwrap(),
+            "-pix_fmt",
+            "yuv420p",
+        ]);
+        if let Some(crf) = crf {
+            cmd.args(["-crf", &crf.to_string()]);
+        }
+        let status = cmd
+            .arg(mp4_path.to_str().unwrap())
             .status()
             .expect("failed to spawn ffmpeg");
         if status.success() {
             println!("encoded video: {}", mp4_path.display());
+            if !keep_frames {
+                remove_frames(&out_dir);
+            }
         } else {
             eprintln!("ffmpeg exited with {status}");
         }
@@ -217,6 +342,154 @@ fn main() {
             out_dir.display()
         );
     }
+}
+
+/// Elements `JULIA_FREEZE` can hold still.
+const FREEZABLE: [&str; 11] = [
+    "jitter",
+    "beat",
+    "beam_size",
+    "c_jumps",
+    "bloom",
+    "fold",
+    "flow",
+    "wobble",
+    "palette",
+    "drive",
+    "pan",
+];
+
+fn remove_frames(dir: &std::path::Path) {
+    for entry in std::fs::read_dir(dir).expect("read output dir") {
+        let path = entry.expect("read output dir entry").path();
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if name.starts_with("frame_") && name.ends_with(".ppm") {
+            std::fs::remove_file(&path).expect("remove frame");
+        }
+    }
+}
+
+/// The whole track's character: tempo (median of a fresh extractor's
+/// confident hops) and its `energy` distribution, plus the onset rate and
+/// level measured on the raw signal.
+fn measure_track(mono: &[f32], sample_rate: f32, fft: usize, hop: usize) -> SongCharacter {
+    let mut extractor = FeatureExtractor::new(fft, hop, sample_rate);
+    let (mut energy, mut tempos) = (Vec::new(), Vec::new());
+    for chunk in mono.chunks(hop) {
+        for bus in extractor.push_samples(chunk) {
+            energy.push(bus.energy);
+            if bus.tempo_confidence > 0.2 {
+                tempos.push(bus.tempo_bpm);
+            }
+        }
+    }
+    tempos.sort_by(f32::total_cmp);
+    let tempo = tempos.get(tempos.len() / 2).copied().unwrap_or(120.0);
+    // The extractor normalises level and flux adaptively, which hides how
+    // loud and how busy a whole track is; measure those on the raw signal.
+    let rms_db: Vec<f32> = mono
+        .chunks_exact(hop)
+        .map(|c| {
+            let ms = c.iter().map(|s| s * s).sum::<f32>() / hop as f32;
+            10.0 * (ms + 1e-12).log10()
+        })
+        .collect();
+    let mut window = hyst_audio::dsp::fft::WindowedFft::new(fft);
+    let mut mags = vec![0.0f32; window.bins];
+    let mut prev = vec![0.0f32; window.bins];
+    let mut flux = Vec::new();
+    for start in (0..mono.len().saturating_sub(fft)).step_by(hop) {
+        window.transform(&mono[start..start + fft], &mut mags);
+        let mut sum = 0.0f32;
+        for (m, p) in mags.iter_mut().zip(prev.iter_mut()) {
+            // Log magnitude so quiet and loud hits count alike.
+            *m = (100.0 * *m).ln_1p();
+            sum += (*m - *p).max(0.0);
+            *p = *m;
+        }
+        flux.push(sum);
+    }
+    let onsets = onset_rate(&flux, sample_rate / hop as f32);
+    let features = TrackFeatures::measure(&rms_db, &energy, onsets, tempo);
+    let character = SongCharacter::from_features(&features);
+    println!("track features {features:?} -> {character:?}");
+    character
+}
+
+struct SongState {
+    reactor: Reactor,
+    track: Option<SectionTrack>,
+    /// Lissajous phase, integrated at a rate set by the song's calm.
+    beam_phase: f32,
+}
+
+/// Fold edges in relative loudness: the fold only shows in the song's own
+/// loudest passages.
+const SONG_FOLD_EDGES: [f32; 2] = [0.85, 1.0];
+
+/// The `after` mapping with JULIA_SONG=on: every fast reaction read through
+/// the song's [`Reactor`], and the section's eased sub-look on top.
+/// `clock` is `[t, dt, aspect]`.
+fn song_frame_params(
+    song: &mut SongState,
+    driver: &mut CuratedJuliaDriver,
+    structure: &mut EnergyStructure,
+    bus: &hyst_core::SignalBus,
+    clock: [f32; 3],
+    beat_pulse: f32,
+    hop_samples: &[f32],
+) -> FrameParams {
+    let [t, dt, aspect] = clock;
+    let character = song.reactor.character;
+    let react = character.react();
+    let r = song.reactor.update(dt, bus);
+    let blend = match &mut song.track {
+        Some(track) => {
+            let (blend, entry) = track.update(t, dt);
+            driver.pin_entry(entry);
+            blend
+        }
+        None => Blend {
+            hue: 0.0,
+            tint: [1.0; 3],
+            decay: 0.0,
+            beam: 1.0,
+            jitter: 1.0,
+            fold: 1.0,
+        },
+    };
+    let mut drive_bus = bus.clone();
+    drive_bus.energy = r.drive_energy;
+    drive_bus.chroma_root_hue = r.chroma_hue;
+    drive_bus.centroid = r.centroid;
+    drive_bus.flatness = r.flatness;
+    let mut julia = driver.update(dt, &drive_bus);
+    julia.hue_shift = (julia.hue_shift + blend.hue).rem_euclid(1.0);
+    for (a, k) in julia.accent.iter_mut().zip(blend.tint) {
+        *a *= k;
+    }
+    structure.update(dt, bus.energy);
+    song.beam_phase += dt * 0.6 * (1.0 - 0.5 * character.calm);
+
+    let base = frame_params(bus, t, 0.0, julia, &[], aspect);
+    let mut p = after_frame_params(base, bus, structure, react);
+    p.memory_field.decay = p.memory_field.decay.max(blend.decay).clamp(0.0, 0.999);
+    p.memory_field.flow_strength = 0.01 + 0.05 * r.sub;
+    p.memory_field.mirror_strength =
+        smoothstep(SONG_FOLD_EDGES[0], SONG_FOLD_EDGES[1], r.punch_energy) * 0.55 * blend.fold;
+    p.bloom_strength = 0.15 + 0.25 * r.punch_energy;
+    p.beam_segments = if blend.beam > 0.0 {
+        lissajous_segments(
+            song.beam_phase,
+            r.beam_energy,
+            hop_samples,
+            JITTER_AMP * react * blend.jitter,
+        )
+    } else {
+        Vec::new()
+    };
+    p.beam_intensity = (0.5 + 2.0 * react * beat_pulse) * blend.beam;
+    p
 }
 
 fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
@@ -231,6 +504,12 @@ fn which_ffmpeg() -> Option<PathBuf> {
             .find(|full_path| full_path.is_file())
     })
 }
+
+/// Small enough that the base Lissajous shape stays the dominant, easily
+/// recognizable read; large enough that the jitter is actually visible as
+/// a real trace wobble rather than disappearing into the beam's own
+/// ~0.012 half-width.
+const JITTER_AMP: f32 = 0.03;
 
 /// A 3:2 Lissajous trace (`src/render/worker/scenes/julia/lissajous.ts` —
 /// the real design intent for the beam's idle path), phase-drifting with
@@ -250,20 +529,19 @@ fn which_ffmpeg() -> Option<PathBuf> {
 /// (analytic derivative of the parametric curve, not a finite-difference
 /// approximation) scaled by a small fixed amount so the underlying shape
 /// stays legible per the user's explicit ask.
-fn lissajous_segments(t: f32, energy: f32, hop_samples: &[f32]) -> Vec<Segment> {
+fn lissajous_segments(
+    phase: f32,
+    energy: f32,
+    hop_samples: &[f32],
+    jitter_amp: f32,
+) -> Vec<Segment> {
     // Segments only, no joint geometry (renderer.rs reverted that — see
     // its comment). High point count is safe and correct here: it just
     // shrinks the bend angle between consecutive segments until a flat
     // cap's notch is genuinely imperceptible, without any bead-chain risk
     // (that risk was specific to round joint discs, not segment density).
     const POINTS: usize = 220;
-    // Small enough that the base Lissajous shape stays the dominant, easily
-    // recognizable read; large enough that the jitter is actually visible as
-    // a real trace wobble rather than disappearing into the beam's own
-    // ~0.012 half-width.
-    const JITTER_AMP: f32 = 0.03;
     let amp = 0.35 + 0.35 * energy;
-    let phase = t * 0.6;
     let point = |theta: f32| -> [f32; 2] {
         [
             amp * (3.0 * theta + phase).sin(),
@@ -293,8 +571,8 @@ fn lissajous_segments(t: f32, energy: f32, hop_samples: &[f32]) -> Vec<Segment> 
         let normal = [-tang[1] / tang_len, tang[0] / tang_len];
         let s = sample_at(i);
         [
-            base[0] + normal[0] * JITTER_AMP * s,
-            base[1] + normal[1] * JITTER_AMP * s,
+            base[0] + normal[0] * jitter_amp * s,
+            base[1] + normal[1] * jitter_amp * s,
         ]
     };
     (0..POINTS)
@@ -359,7 +637,7 @@ fn frame_params(
         bloom_threshold: 0.55,
         bloom_strength: 0.2 + 0.5 * bus.energy,
         exposure: 0.035,
-        beam_segments: lissajous_segments(t, bus.energy, hop_samples),
+        beam_segments: lissajous_segments(t * 0.6, bus.energy, hop_samples, JITTER_AMP),
         beam_color: [1.0, 1.0, 1.0],
         beam_intensity: 0.5 + 2.0 * beat_pulse,
     }
@@ -401,8 +679,9 @@ fn after_frame_params(
     mut params: FrameParams,
     bus: &hyst_core::SignalBus,
     structure: &EnergyStructure,
+    wobble: f32,
 ) -> FrameParams {
-    let bar_wobble = (bus.bar_phase * std::f32::consts::TAU).sin() * 0.01;
+    let bar_wobble = (bus.bar_phase * std::f32::consts::TAU).sin() * 0.01 * wobble;
     let decay = ((0.86 + 0.105 * structure.build()).max(0.86 + 0.125 * structure.suspension())
         + bar_wobble)
         .clamp(0.0, 0.999);

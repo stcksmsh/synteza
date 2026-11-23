@@ -68,6 +68,14 @@ pub struct CuratedJuliaDriver {
     energy_env: f32,
     energy_slow: f32,
     colour: ColourEnv,
+    /// `c` this frame before the orbit, where a move toward a newly pinned
+    /// entry starts from.
+    base_c: [f32; 2],
+    energy_jumps: bool,
+    pan_steer: bool,
+    /// Entry a caller (the song-aware sections) holds the driver on: the
+    /// hold cadence re-dives into it instead of moving to the next entry.
+    pinned: Option<usize>,
 }
 
 impl Default for CuratedJuliaDriver {
@@ -95,7 +103,44 @@ impl CuratedJuliaDriver {
             energy_env: 0.0,
             energy_slow: 0.0,
             colour: ColourEnv::new(),
+            base_c: c,
+            energy_jumps: true,
+            pan_steer: true,
+            pinned: None,
         }
+    }
+
+    /// Whether a jump in smoothed energy may cut a hold short (on by default).
+    pub fn set_energy_jumps(&mut self, on: bool) {
+        self.energy_jumps = on;
+    }
+
+    /// Whether the view keeps steering toward the set's boundary (on by
+    /// default); off holds the pan where it is between moves.
+    pub fn set_pan_steer(&mut self, on: bool) {
+        self.pan_steer = on;
+    }
+
+    /// Hold the driver on [`CURATED_C`]`[entry]`. A different entry starts an
+    /// eased move to it from wherever `c` is now, even mid-move; the hold
+    /// cadence then pulls back and re-dives into the same entry.
+    pub fn pin_entry(&mut self, entry: usize) {
+        let entry = entry % CURATED_C.len();
+        self.pinned = Some(entry);
+        if entry != self.entry {
+            self.start_move(entry);
+        }
+    }
+
+    fn start_move(&mut self, to: usize) {
+        self.from_c = self.base_c;
+        self.entry = to;
+        self.moving = Some(0.0);
+        let to = CURATED_C[to];
+        let dist = ((to[0] - self.from_c[0]).powi(2) + (to[1] - self.from_c[1]).powi(2)).sqrt();
+        // Smoothstep's peak slope is 1.5x its mean.
+        self.move_secs = (1.5 * dist / CURATED_MOVE_SPEED).max(CURATED_MOVE_MIN_SECS);
+        self.pan_target = find_interesting_pan(to);
     }
 
     pub fn update(&mut self, dt: f32, bus: &hyst_core::SignalBus) -> JuliaNavState {
@@ -110,19 +155,12 @@ impl CuratedJuliaDriver {
         match self.moving {
             None => {
                 self.hold_secs += dt;
-                let jumped = self.energy_fast - self.energy_slow > CURATED_ENERGY_JUMP
+                let jumped = self.energy_jumps
+                    && self.energy_fast - self.energy_slow > CURATED_ENERGY_JUMP
                     && self.hold_secs >= CURATED_MIN_HOLD_SECS;
                 if self.hold_secs >= CURATED_HOLD_SECS || jumped {
-                    self.from_c = CURATED_C[self.entry];
-                    self.entry = (self.entry + 1) % CURATED_C.len();
-                    self.moving = Some(0.0);
-                    let to = CURATED_C[self.entry];
-                    let dist = ((to[0] - self.from_c[0]).powi(2)
-                        + (to[1] - self.from_c[1]).powi(2))
-                    .sqrt();
-                    // Smoothstep's peak slope is 1.5x its mean.
-                    self.move_secs = (1.5 * dist / CURATED_MOVE_SPEED).max(CURATED_MOVE_MIN_SECS);
-                    self.pan_target = find_interesting_pan(CURATED_C[self.entry]);
+                    let next = self.pinned.unwrap_or((self.entry + 1) % CURATED_C.len());
+                    self.start_move(next);
                 }
             }
             Some(s) => {
@@ -157,6 +195,7 @@ impl CuratedJuliaDriver {
             }
             None => target_c,
         };
+        self.base_c = base_c;
         // Small orbit around the entry so the shape keeps breathing while
         // held; sized to the view, as in `JuliaDriver`.
         self.wobble += dt * (0.1 + 0.3 * e);
@@ -166,7 +205,7 @@ impl CuratedJuliaDriver {
             base_c[1] + r * (0.75 * self.wobble).sin(),
         ];
 
-        if self.moving.is_none() && self.frame.is_multiple_of(RESTEER_FRAMES) {
+        if self.pan_steer && self.moving.is_none() && self.frame.is_multiple_of(RESTEER_FRAMES) {
             self.pan_target = steer_toward_boundary(self.pan, c, zoom);
         }
         let mut sx = (self.pan_target[0] - self.pan[0]) * PAN_EASE;
@@ -271,5 +310,40 @@ mod tests {
             d.entry, 1,
             "an energy jump after the minimum hold should move on"
         );
+    }
+
+    /// Bites: a pinned entry is reached by an eased move, a re-pin in the
+    /// middle of that move turns it without a jump in `c`, and the hold
+    /// cadence re-dives into the pinned entry instead of moving on.
+    #[test]
+    fn pin_entry_eases_and_holds() {
+        let mut d = CuratedJuliaDriver::new();
+        d.set_energy_jumps(false);
+        let dt = 1.0 / 30.0;
+        let mut prev_c: Option<[f32; 2]> = None;
+        let mut step = |d: &mut CuratedJuliaDriver, i: usize| {
+            let s = d.update(dt, &bus(if (i / 5).is_multiple_of(2) { 0.9 } else { 0.1 }));
+            if let Some(p) = prev_c {
+                let jump = ((s.c[0] - p[0]).powi(2) + (s.c[1] - p[1]).powi(2)).sqrt();
+                assert!(jump < 0.01, "c jumped {jump} at frame {i}");
+            }
+            prev_c = Some(s.c);
+        };
+        for i in 0..30 {
+            step(&mut d, i);
+        }
+        d.pin_entry(2);
+        assert!(d.moving.is_some());
+        for i in 30..45 {
+            step(&mut d, i);
+        }
+        assert!(d.moving.is_some(), "the move should still be under way");
+        d.pin_entry(3);
+        assert_eq!(d.entry, 3);
+        // Long enough for the move and several hold cycles.
+        for i in 45..(30 * 120) {
+            step(&mut d, i);
+            assert_eq!(d.entry, 3, "left the pinned entry at frame {i}");
+        }
     }
 }
