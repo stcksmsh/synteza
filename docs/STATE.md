@@ -11,21 +11,24 @@ synteza, never the reverse). The library of looks is the product (docs/PLAN.md).
 - #25 docs/THIRD_PARTY_LICENCES.md (WO-10).
 - WO-3 / S0: afekt#6 + synteza #26. hyst-compile/hyst-previz/hyst-cli, scripts/dance_*, scripts/author, dance docs
   moved to afekt. afekt got Rust CI and cargo gates. v47 output byte-identical before/after.
-- #27 docs/PLAN.md merged as a proposal.
-- Licence (this PR): GPL-3.0-or-later for code and hysts, CC BY-SA 4.0 for art/docs (COPYING.md); render tests
+- #27 docs/PLAN.md merged as a proposal. #29 README/AGENTS.md rewrite (WO-8).
+- #30 scripts/look/: contact sheets, blind A/B page + loopback server; before sheets in docs/plan-evidence/before/;
+  render example follows the audio clock (WO-6).
+- #28 Licence: GPL-3.0-or-later for code and hysts, CC BY-SA 4.0 for art/docs (COPYING.md); render tests
   run with --test-threads=1 against the lavapipe SIGSEGV.
 
 ## In flight
-- Nothing.
+- WO-7 look spike on the Julia renderer (PLAN §4.1 rows 1-5: HDR targets, exposure/tonemap/dither, TS decay range,
+  fbm flow noise, beam into field, direct Julia + curated boundary c). Old look behind JULIA_LOOK=before.
+  Branch claude/wo7-look-spike, builder (opus). Ends in a blind A/B for the owner.
 
 ## Next            (ordered, PLAN §9)
-1. WO-8: rewrite README.md for the Rust visualizer; trim AGENTS.md to current rules (history stays in git).
-2. WO-6: contact-sheet + blind A/B tool; "before" renders on the synthetic clip and one owner track, 16:9 and 9:16.
-3. WO-7: time-boxed look spike on the existing renderer, owner judges by eye. (Owner: rethink all scenes;
-   Mandelbulb dive dropped.)
-4. WO-11: S1 engine design note (docs/ENGINE.md); licence now settled.
-5. WO-9 (test competitor "Infinite"), WO-12 (OKLCH palettes), WO-13 (port TS build/drop/break detectors).
-6. Follow-up (#19 review minor): julia re-acquire also fires on a smooth deep-zoom boundary; untested.
+1. Owner's blind A/B verdict on WO-7. If "after" doesn't win, re-diagnose with the owner before S1.
+2. Follow-up: stale AGENTS.md section refs in docs/PLAN.md:44, crates/hyst-choreo/README.md, docs/osc.md,
+   SINTEZA_OFFLINE_SSM.md; stale module doc in crates/hyst-render/src/lib.rs.
+3. WO-11: S1 engine design note (docs/ENGINE.md); licence now settled.
+4. WO-9 (test competitor "Infinite"), WO-12 (OKLCH palettes), WO-13 (port TS build/drop/break detectors).
+5. Follow-up (#19 review minor): julia re-acquire also fires on a smooth deep-zoom boundary; untested.
 
 ## Waiting on owner
 - PLAN §8.3 still open: 1.0 platforms, library shape (owner: rethink all scenes; §4.2 is the proposal), fate of
