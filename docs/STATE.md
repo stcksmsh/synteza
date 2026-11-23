@@ -1,43 +1,44 @@
 # State 2026-11-23
 
 ## Goal
-synteza (synteзa): native Rust music visualizer, standalone product and kabl's video core (kabl depends on
-synteza, never the reverse). The dance compiler/preview is moving to afekt. Frozen TS reference in src/, tools/.
+synteza (synteзa): native Rust music visualizer engine, standalone product and kabl's video core (kabl depends on
+synteza, never the reverse). The library of looks is the product (docs/PLAN.md). Frozen TS reference in src/, tools/.
 
 ## Done
-- #17 STATE + clippy fix. #18 docs/AFEKT_MOVE.md. #19 hyst-hw deleted, fmt, julia steering fix.
-- #20 .github/workflows/rust.yml (fmt, clippy, CPU tests, render tests on lavapipe; owner OK'd coordinator edit).
-- #22 docs/REFERENCE.md: reference laptop (i7-13700H, Iris Xe), owner's tracks ~/Music/Singles/Published.
-- #23 hyst-compile on pure-Rust libm; golden digests re-recorded (owner's decision), machine-independent.
-- PR #15 closed (owner).
+- #17-#20: state, clippy fix, afekt inventory, hyst-hw deleted, fmt, julia steering fix, Rust CI on lavapipe.
+- #22 docs/REFERENCE.md (owner's laptop i7-13700H + Iris Xe; owner's tracks ~/Music/Singles/Published).
+- #23 libm in hyst-compile, golden digests machine-independent (now lives in afekt).
+- #25 docs/THIRD_PARTY_LICENCES.md (WO-10).
+- WO-3 / S0: afekt#6 + synteza #26. hyst-compile/hyst-previz/hyst-cli, scripts/dance_*, scripts/author, dance docs
+  moved to afekt. afekt got Rust CI and cargo gates. v47 output byte-identical before/after.
+- #27 docs/PLAN.md merged as a proposal.
+- Licence (this PR): GPL-3.0-or-later for code and hysts, CC BY-SA 4.0 for art/docs (COPYING.md); render tests
+  run with --test-threads=1 against the lavapipe SIGSEGV.
 
 ## In flight
-- WO-3 (S0 move): hyst-compile/hyst-previz/hyst-cli + scripts/dance_*, scripts/author/ → afekt. Two PRs:
-  synteza claude/s0-move-out, afekt claude/s0-move-in; merge together, afekt first. Builder (opus).
-  Coordinator assumptions: analyze.py, hyst-choreo, hyst-output stay in synteza; copy files (no subtree).
-- WO-10 third-party licence texts → docs/THIRD_PARTY_LICENCES.md, branch claude/wo10-licences. Builder (sonnet).
+- Nothing.
 
-## Next            (ordered)
-1. Review and merge WO-3 (both repos) and WO-10.
-2. WO-8: README/AGENTS.md trim after WO-3.
-3. WO-6: contact-sheet + blind A/B tool, "before" renders (scenes will be rethought; Mandelbulb dive dropped).
-4. WO-9: hands-on test of competitor "Infinite".
-5. Follow-up (#19 review minor): julia re-acquire also fires on smooth deep-zoom boundary; untested.
+## Next            (ordered, PLAN §9)
+1. WO-8: rewrite README.md for the Rust visualizer; trim AGENTS.md to current rules (history stays in git).
+2. WO-6: contact-sheet + blind A/B tool; "before" renders on the synthetic clip and one owner track, 16:9 and 9:16.
+3. WO-7: time-boxed look spike on the existing renderer, owner judges by eye. (Owner: rethink all scenes;
+   Mandelbulb dive dropped.)
+4. WO-11: S1 engine design note (docs/ENGINE.md); licence now settled.
+5. WO-9 (test competitor "Infinite"), WO-12 (OKLCH palettes), WO-13 (port TS build/drop/break detectors).
+6. Follow-up (#19 review minor): julia re-acquire also fires on a smooth deep-zoom boundary; untested.
 
 ## Waiting on owner
-- Licence. Owner wants: nobody takes it closed and sells it without credit. Proposed: GPL-3.0-or-later for code
-  and hysts, CC BY-SA 4.0 for art/docs. Awaiting confirmation. Blocks WO-11, S1.
-- Merge plan branch `ccr-1adff24f-zzq23d` (docs/PLAN.md)? Owner was given §1, §4.2, §8.1, §9 to read.
-- OK to add `-- --test-threads=1` to the render job (lavapipe SIGSEGV seen 3 times)?
-- Still open from PLAN §8.3: 1.0 platforms, library shape (owner: rethink all scenes), fate of
-  hyst-choreo/hyst-script/hyst-output, TS Pages demo, business model.
+- PLAN §8.3 still open: 1.0 platforms, library shape (owner: rethink all scenes; §4.2 is the proposal), fate of
+  hyst-choreo/hyst-script/hyst-output, TS Pages demo repair or retire, business model.
+- External v47 reference HTMLs (music-arm folder) are stale; afekt's concern now.
+- Shadertoy terms could not be fetched automatically; owner reads in a browser if Shadertoy code is ever wanted.
 
 ## Hard-won facts
 - The owner allows the coordinator to `gh pr merge` at any time (2026-11-23).
-- The slopstop hook denies agents writing .github/workflows; edit only on the owner's explicit word.
-- `gh pr edit` fails (GraphQL Projects classic); use `gh api -X PATCH repos/stcksmsh/synteza/pulls/<n>`.
-- glibc hypot differs by 1 ULP between local Intel and the CI AMD runner; hence libm in hyst-compile.
-- afekt has no Rust code (until WO-3); it uses synteza via SYNTEZA_DIR, built binaries, scripts, fixtures.
-- hyst-render tests need a GPU locally; run them only when a slice touches it.
-- Frozen src/ and tools/ are read-only. ONE arm; ensemble code is the v47 reference only.
+- The slopstop hook denies agents writing .github/ and .nonslop.toml; edit only on the owner's explicit word.
+- `gh pr edit` fails (GraphQL Projects classic); use `gh api -X PATCH repos/stcksmsh/<repo>/pulls/<n>`.
+- glibc hypot differs by 1 ULP between local Intel and the CI AMD runner: keep deterministic math where digests matter.
+- afekt uses synteza only via SYNTEZA_DIR: scripts/analyze* and the hyst-audio beat_pll example.
+- hyst-render tests need a GPU locally; CI runs them on lavapipe.
+- Frozen src/ and tools/ are read-only. ONE arm.
 - Commit messages are plain, no attribution lines.

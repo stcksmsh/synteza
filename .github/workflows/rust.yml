@@ -45,7 +45,7 @@ jobs:
       - name: cargo test -p hyst-render
         shell: bash
         run: |
-          cargo test -p hyst-render -- --nocapture 2>&1 | tee render-test.log
+          cargo test -p hyst-render -- --nocapture --test-threads=1 2>&1 | tee render-test.log
           if grep -q "no GPU adapter" render-test.log; then
             echo "::error::wgpu found no GPU adapter; render tests were skipped"
             exit 1
