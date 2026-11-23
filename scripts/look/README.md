@@ -1,7 +1,7 @@
 # scripts/look — judging renders by eye
 
 Tools for comparing two versions of the visualizer's look. Python 3 with numpy and
-Pillow, plus ffmpeg/ffprobe on `PATH`.
+Pillow >= 10.1 (for the sized default font), plus ffmpeg/ffprobe on `PATH`.
 
 ## Contact sheet
 
@@ -31,6 +31,10 @@ python3 scripts/look/serve.py /secondary/hyst-data/synteza/before
 - `a`, `b`: the two clips, relative to the served directory.
 - `audio`: what to play; defaults to `a` (clips from `render_before` below carry the track).
 - `trials`: how many blinded presentations (default 3). `log`: the log's file name.
+
+The file names are visible in the URL and in the videos' `src`, so copy or link the
+clips to neutral names (`one.mp4`, `two.mp4`) before the owner opens the page. A finished
+run's URL opens straight on "Done"; use a new `log=` to run again.
 
 `serve.py` is needed for seeking: Python's `http.server` ignores Range requests, so a
 browser cannot seek video it serves. It listens on 127.0.0.1 only. After each verdict the

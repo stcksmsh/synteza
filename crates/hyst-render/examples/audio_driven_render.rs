@@ -79,6 +79,15 @@ fn main() {
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("test-output"));
     std::fs::create_dir_all(&out_dir).expect("create test-output dir");
+    // ffmpeg's frame_%04d pattern would pick up leftovers from a longer or
+    // larger earlier run.
+    for entry in std::fs::read_dir(&out_dir).expect("read output dir") {
+        let path = entry.expect("read output dir entry").path();
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if name.starts_with("frame_") && name.ends_with(".ppm") {
+            std::fs::remove_file(&path).expect("remove stale frame");
+        }
+    }
 
     let ctx = GpuContext::new_blocking().expect("no GPU adapter available — cannot render");
     let mut renderer = Renderer::new(&ctx, width, height);
@@ -121,9 +130,11 @@ fn main() {
             last_beat_phase = bus.beat_phase;
             beat_pulse *= 0.85;
 
-            // Emit a frame once the audio clock reaches the next frame's time,
-            // so the encoded video stays in step with the track (a rounded
-            // fixed hop stride drifts: 3 hops per frame is 28.7 fps at 44.1 kHz).
+            // Emit a frame once the count of SignalBus hops reaches the next
+            // frame's time, so the video does not drift against the track (a
+            // rounded fixed hop stride does: 3 hops per frame is 28.7 fps at
+            // 44.1 kHz). Hops lag the true sample position by a constant ~3
+            // hops (~35 ms) while the extractor's window first fills.
             if hop_count as f32 / hops_per_sec >= frame_index as f32 / FPS {
                 let julia = julia_driver.update(dt, &bus);
                 let aspect = width as f32 / height as f32;
