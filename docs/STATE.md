@@ -9,7 +9,8 @@ reference (src/, tools/). Split from Hysteresis on 2026-11-22.
 - Split: history of the old `body` branch minus afekt's paths. cargo test --workspace --exclude hyst-render green (228 tests).
 
 ## In flight
-- Nothing. No builders running.
+- WO-4 (CI, delete hyst-hw, clippy fix, diagnose failing julia test): branch claude/wo4-ci, builder (opus).
+- WO-2 (afekt inventory, docs/AFEKT_MOVE.md): branch claude/wo2-afekt-inventory, builder (sonnet).
 
 ## Proposed plan (not owner-reviewed)
 - `docs/PLAN.md` on branch `ccr-1adff24f-zzq23d` (from the planning session; evidence in docs/plan-evidence/ there).
@@ -27,7 +28,6 @@ reference (src/, tools/). Split from Hysteresis on 2026-11-22.
 4. WO-8: README/AGENTS.md trim after WO-3.
 
 ## Waiting on owner
-- OK to dispatch WO-4 + WO-2.
 - Licence (PLAN §8.3 decision 1; plan suggests MIT OR Apache-2.0 for engine crates). Blocks WO-11, S1.
 - Other §8.3 decisions: business model, reference laptop + tracks, 1.0 platforms, Mandelbulb verdict, library
   shape, fate of hyst-choreo/hyst-script/hyst-output, TS Pages demo repair or retire.
