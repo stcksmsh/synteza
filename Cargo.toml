@@ -8,7 +8,6 @@ members = [
   "crates/hyst-choreo",
   "crates/hyst-compile",
   "crates/hyst-output",
-  "crates/hyst-hw",
   "crates/hyst-previz",
   "crates/hyst-cli",
 ]

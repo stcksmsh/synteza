@@ -305,7 +305,7 @@ impl JuliaDriver {
         // occasionally (not every frame), then ease toward the found
         // boundary point with a step capped at a fraction of the view width
         // so it can never snap.
-        if self.frame % RESTEER_FRAMES == 0 {
+        if self.frame.is_multiple_of(RESTEER_FRAMES) {
             self.pan_target = steer_toward_boundary(self.pan, c, zoom);
         }
         let mut sx = (self.pan_target[0] - self.pan[0]) * PAN_EASE;
@@ -514,8 +514,15 @@ fn escape_iters_f64(p: [f64; 2], c: [f64; 2]) -> u32 {
 /// with the highest finite escape count (closest to the boundary without
 /// being captured), lightly biased toward the view centre so the target
 /// doesn't skate to a corner. If the view has already fallen off the
-/// boundary entirely (best finite escape count too low), it retries once at
-/// a much wider span to re-acquire the filament.
+/// boundary entirely (escape counts across the view nearly uniform), it
+/// retries once at a much wider span to re-acquire the filament.
+///
+/// "Fallen off" is judged by the spread of escape counts, not by the best
+/// finite count: for `c` inside the main cardioid the boundary is smooth and
+/// grid samples next to it escape in only ~10-20 iterations, so an absolute
+/// threshold fired the wide search while the view was still on the boundary,
+/// throwing the target across the whole set every re-steer and dragging the
+/// view through the solid interior.
 fn steer_toward_boundary(pan: [f32; 2], c: [f32; 2], zoom: f32) -> [f32; 2] {
     const GRID: i32 = 15;
     let cf = [c[0] as f64, c[1] as f64];
@@ -524,7 +531,7 @@ fn steer_toward_boundary(pan: [f32; 2], c: [f32; 2], zoom: f32) -> [f32; 2] {
 
     let search = |span: f64| -> (u32, [f64; 2]) {
         let mut best_score = f64::MIN;
-        let mut best_iters = 0u32;
+        let (mut lo, mut hi) = (192u32, 0u32);
         let mut best = [px, py];
         for i in 0..GRID {
             for j in 0..GRID {
@@ -532,22 +539,23 @@ fn steer_toward_boundary(pan: [f32; 2], c: [f32; 2], zoom: f32) -> [f32; 2] {
                 let fy = (j as f64 + 0.5) / GRID as f64 * 2.0 - 1.0;
                 let p = [px + fx * z * span, py + fy * z * span];
                 let iters = escape_iters_f64(p, cf);
+                lo = lo.min(iters);
+                hi = hi.max(iters);
                 if iters == 0 || iters >= 192 {
                     continue;
                 }
                 let score = iters as f64 - 12.0 * (fx * fx + fy * fy);
                 if score > best_score {
                     best_score = score;
-                    best_iters = iters;
                     best = p;
                 }
             }
         }
-        (best_iters, best)
+        (hi - lo, best)
     };
 
-    let (iters, best) = search(0.85);
-    let best = if iters < 24 { search(6.0).1 } else { best };
+    let (spread, best) = search(0.85);
+    let best = if spread < 24 { search(6.0).1 } else { best };
     [best[0] as f32, best[1] as f32]
 }
 
@@ -1571,7 +1579,7 @@ mod tests {
     fn jitter_bus(i: u32) -> hyst_core::SignalBus {
         // adversarial: energy/centroid/flatness slam between extremes every
         // frame — the worst case for any raw-audio-driven twitch.
-        let hi = i % 2 == 0;
+        let hi = i.is_multiple_of(2);
         hyst_core::SignalBus {
             energy: if hi { 0.95 } else { 0.02 },
             centroid: if hi { 0.9 } else { 0.1 },
