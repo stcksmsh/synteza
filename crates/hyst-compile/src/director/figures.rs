@@ -246,6 +246,21 @@ pub fn compile_figures(
 /// others as moving red zones: no checked point of one arm comes within
 /// `clearance_m` of a checked point of another (plus the implements' radii).
 /// Arms are solved in order at each knot, so earlier arms have right of way.
+thread_local! {
+    pub static DIAG: std::cell::RefCell<Option<Vec<String>>> = const { std::cell::RefCell::new(None) };
+}
+fn dl(f: &str, a: &[f64], r: f64) -> f64 {
+    DIAG.with(|d| {
+        if let Some(v) = d.borrow_mut().as_mut() {
+            if v.len() < 4000 {
+                let ins: Vec<String> = a.iter().map(|x| format!("{:016x}", x.to_bits())).collect();
+                v.push(format!("{f} {} {:016x} {r:e}", ins.join(","), r.to_bits()));
+            }
+        }
+    });
+    r
+}
+
 pub fn compile_ensemble(
     json: &str,
     config: CompileConfig,
@@ -1879,27 +1894,25 @@ fn compile_pass(
         if count == 1 {
             return [world[0], world[1], o[2] + p[2]];
         }
-        let own = (o[1] - middle[1]).atan2(o[0] - middle[0]);
+        let own = dl("atan2", &[o[1] - middle[1], o[0] - middle[0]], (o[1] - middle[1]).atan2(o[0] - middle[0]));
         let (x, y) = (world[0] - middle[0], world[1] - middle[1]);
-        // Eases out to the circle's edge over the last fifth of it.
-        let out = x.hypot(y);
-        let out = out.max(keep_out)
-            + 0.2 * keep_out * (-(out - keep_out).max(0.0) / (0.2 * keep_out)).exp();
-        let off = (y.atan2(x) - own + PI).rem_euclid(TAU) - PI;
-        let half = (around - ((ball + 0.12) / out).min(1.0).asin()).max(0.0);
-        // Untouched over the inner 70 % of the sector, eased into its
-        // edge beyond. (Squeezing the whole sector bent the hand's path
-        // over its own base, into a joint limit and out with a kick.)
+        let out = dl("hypot", &[x, y], x.hypot(y));
+        let ea = -(out - keep_out).max(0.0) / (0.2 * keep_out);
+        let out = out.max(keep_out) + 0.2 * keep_out * dl("exp", &[ea], ea.exp());
+        let off = (dl("atan2", &[y, x], y.atan2(x)) - own + PI).rem_euclid(TAU) - PI;
+        let aa = ((ball + 0.12) / out).min(1.0);
+        let half = (around - dl("asin", &[aa], aa.asin())).max(0.0);
         let (knee, edge) = (0.7 * half, (0.3 * half).max(1e-9));
         let inside = if off.abs() <= knee {
             off
         } else {
-            off.signum() * (knee + edge * ((off.abs() - knee) / edge).tanh())
+            let ta = (off.abs() - knee) / edge;
+            off.signum() * (knee + edge * dl("tanh", &[ta], ta.tanh()))
         };
         let angle = own + lerp(off, inside, limit);
         [
-            middle[0] + out * angle.cos(),
-            middle[1] + out * angle.sin(),
+            middle[0] + out * dl("cos", &[angle], angle.cos()),
+            middle[1] + out * dl("sin", &[angle], angle.sin()),
             o[2] + p[2],
         ]
     };
@@ -3154,7 +3167,11 @@ mod tests {
     fn diag_dump_ring() {
         let rig = Rig::illustrative_five_axis();
         let steady = super::super::tests::fixture(0.7, 0.7);
+        DIAG.with(|d| *d.borrow_mut() = Some(Vec::new()));
         let s = compile_ensemble(&steady, CompileConfig::default(), rig, &[], &ring(), 0.1).unwrap();
+        for l in DIAG.with(|d| d.borrow_mut().take().unwrap()) {
+            println!("LIBM {l}");
+        }
         let v = serde_json::to_value(&s).unwrap();
         for line in serde_json::to_string_pretty(&v).unwrap().lines().enumerate() {
             println!("DIAG {:07} {}", line.0, line.1.trim());
