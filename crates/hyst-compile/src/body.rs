@@ -74,10 +74,10 @@ pub const FRAME_MARGIN_PX: f64 = 20.0;
 /// `project` draws it with the study camera.
 pub fn project(p: [f64; 3]) -> (f64, f64, f64) {
     let t = [0.0, 0.0, CAMERA_TARGET_Z];
-    let (cp, sp) = (CAMERA_PITCH.cos(), CAMERA_PITCH.sin());
+    let (cp, sp) = (libm::cos(CAMERA_PITCH), libm::sin(CAMERA_PITCH));
     let eye = [
-        t[0] + CAMERA_DISTANCE * cp * CAMERA_YAW.cos(),
-        t[1] + CAMERA_DISTANCE * cp * CAMERA_YAW.sin(),
+        t[0] + CAMERA_DISTANCE * cp * libm::cos(CAMERA_YAW),
+        t[1] + CAMERA_DISTANCE * cp * libm::sin(CAMERA_YAW),
         t[2] + CAMERA_DISTANCE * sp,
     ];
     let norm = |a: [f64; 3]| {
@@ -194,7 +194,7 @@ fn minjerk(x: f64) -> f64 {
 /// velocity, so acceleration and jerk stay continuous.
 fn profile(x: f64, ra: f64, rd: f64) -> f64 {
     // integral of the smootherstep 6y^5 - 15y^4 + 10y^3
-    let s = |y: f64| y.powi(6) - 3.0 * y.powi(5) + 2.5 * y.powi(4);
+    let s = |y: f64| libm::pow(y, 6.0) - 3.0 * libm::pow(y, 5.0) + 2.5 * libm::pow(y, 4.0);
     let x = x.clamp(0.0, 1.0);
     let i = if x < ra {
         ra * s(x / ra)
@@ -298,7 +298,7 @@ impl Motion {
         };
         if m.wander != 0.0 && x < 1.0 {
             let (tau, pi) = (std::f64::consts::TAU, std::f64::consts::PI);
-            v += m.wander * (tau * x).sin() * (pi * x).sin().powi(2);
+            v += m.wander * libm::sin(tau * x) * libm::pow(libm::sin(pi * x), 2.0);
         }
         v
     }
@@ -313,7 +313,7 @@ impl Motion {
     }
 
     fn breath_at(&self, t: f64) -> [f64; 2] {
-        let s = (std::f64::consts::TAU * self.breath_hz * t + self.breath_phase).sin();
+        let s = libm::sin(std::f64::consts::TAU * self.breath_hz * t + self.breath_phase);
         [self.breath[0] * s, self.breath[1] * s]
     }
 
@@ -403,8 +403,8 @@ impl Motion {
         }
         let overlap = lerp(0.3, 0.12, time);
         let settle = 0.4 * flow.sqrt();
-        let pace = PACE_SLOW * (PACE_FAST / PACE_SLOW).powf(energy);
-        let scale = SIZE_MIN.powf(1.0 - size);
+        let pace = PACE_SLOW * libm::pow(PACE_FAST / PACE_SLOW, energy);
+        let scale = libm::pow(SIZE_MIN, 1.0 - size);
         let per: [f64; 5] = [
             1.0,
             1.0,
@@ -519,10 +519,10 @@ impl Motion {
                                 yaw_degrees: 0.0,
                             };
                             let z = forward_kinematics(&rig, &place, &q).expect("fk")[j][2];
-                            let need = ((FLOOR_M + DISC_M + 0.005 - z) / link)
-                                .clamp(-1.0, 1.0)
-                                .asin()
-                                .to_degrees();
+                            let need = libm::asin(
+                                ((FLOOR_M + DISC_M + 0.005 - z) / link).clamp(-1.0, 1.0),
+                            )
+                            .to_degrees();
                             -(1..j).map(|k| q[k]).sum::<f64>() - need
                         })
                         .fold(f64::MAX, f64::min)
@@ -606,7 +606,7 @@ impl Motion {
                                         }
                                     });
                                     let h = hand_at(&q);
-                                    h[0].hypot(h[1])
+                                    libm::hypot(h[0], h[1])
                                 })
                                 .fold(0.0, f64::max);
                             lim[0].0.min((0.75 * HAND_MPS / r.max(0.05)).to_degrees())
@@ -675,7 +675,7 @@ impl Motion {
             .windows(2)
             .map(|w| {
                 (0..3)
-                    .map(|i| (w[1][i] - w[0][i]).powi(2))
+                    .map(|i| libm::pow(w[1][i] - w[0][i], 2.0))
                     .sum::<f64>()
                     .sqrt()
                     / h
@@ -790,7 +790,7 @@ pub fn movement(fr: &[([f64; 5], Vec<[f64; 3]>)]) -> [f64; 3] {
         .windows(2)
         .map(|w| {
             (0..3)
-                .map(|k| (w[1].1[5][k] - w[0].1[5][k]).powi(2))
+                .map(|k| libm::pow(w[1].1[5][k] - w[0].1[5][k], 2.0))
                 .sum::<f64>()
                 .sqrt()
         })
@@ -856,7 +856,7 @@ pub fn measure(score: &EnsembleScore, agent: usize) -> Measured {
         .windows(2)
         .map(|w| {
             (0..3)
-                .map(|k| (w[1][k] - w[0][k]).powi(2))
+                .map(|k| libm::pow(w[1][k] - w[0][k], 2.0))
                 .sum::<f64>()
                 .sqrt()
                 * FPS
@@ -940,7 +940,7 @@ pub fn check_2a(score: &EnsembleScore) -> Result<Check2a, String> {
 pub fn feasible_traced(b: &Body, seed: u64) -> (Option<(f64, EnsembleScore)>, Vec<String>) {
     let mut first = Vec::new();
     for i in 0..=STRETCH_STEPS {
-        let s = 1.1f64.powi(i as i32);
+        let s = libm::pow(1.1f64, f64::from(i as i32));
         let score = clip(b, seed, s);
         let (v, _) = violations(&score);
         if i == 0 {
@@ -972,7 +972,7 @@ fn p90(v: &[f64]) -> f64 {
 pub fn best_lag(a: &[f64], b: &[f64]) -> f64 {
     let norm = |v: &[f64]| {
         let m = mean(v);
-        let sd = (v.iter().map(|x| (x - m).powi(2)).sum::<f64>() / v.len() as f64).sqrt();
+        let sd = (v.iter().map(|x| libm::pow(x - m, 2.0)).sum::<f64>() / v.len() as f64).sqrt();
         v.iter()
             .map(|x| if sd > 1e-12 { (x - m) / sd } else { 0.0 })
             .collect::<Vec<_>>()
@@ -1031,7 +1031,11 @@ pub fn descriptors(score: &EnsembleScore) -> Vec<f64> {
         &fr.iter()
             .map(|f| {
                 let (s, h) = (f.1[1], f.1[5]);
-                (0..3).map(|k| (h[k] - s[k]).powi(2)).sum::<f64>().sqrt() / REACH_M
+                (0..3)
+                    .map(|k| libm::pow(h[k] - s[k], 2.0))
+                    .sum::<f64>()
+                    .sqrt()
+                    / REACH_M
             })
             .collect::<Vec<_>>(),
     ));
@@ -1047,14 +1051,14 @@ pub fn descriptors(score: &EnsembleScore) -> Vec<f64> {
         .windows(2)
         .map(|w| {
             (0..3)
-                .map(|k| (w[1].1[5][k] - w[0].1[5][k]).powi(2))
+                .map(|k| libm::pow(w[1].1[5][k] - w[0].1[5][k], 2.0))
                 .sum::<f64>()
                 .sqrt()
                 * FPS
         })
         .collect();
     let m = mean(&hand);
-    let var: f64 = hand.iter().map(|x| (x - m).powi(2)).sum();
+    let var: f64 = hand.iter().map(|x| libm::pow(x - m, 2.0)).sum();
     let periodicity = ((0.3 * FPS) as usize..=(3.0 * FPS) as usize)
         .map(|l| {
             if var < 1e-12 {

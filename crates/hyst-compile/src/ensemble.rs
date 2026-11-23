@@ -144,7 +144,10 @@ impl Implement {
         let mut parts: Vec<Mirror> = (0..10)
             .map(|i| {
                 let a = (i as f64 + 0.5) * std::f64::consts::TAU / 10.0;
-                let (rho, tau) = ([0.0, a.cos(), a.sin()], [0.0, -a.sin(), a.cos()]);
+                let (rho, tau) = (
+                    [0.0, libm::cos(a), libm::sin(a)],
+                    [0.0, -libm::sin(a), libm::cos(a)],
+                );
                 let n = [-0.3, 0.95 * rho[1], 0.95 * rho[2]];
                 let k = dot(n, n).sqrt();
                 Mirror::rect(
@@ -215,7 +218,7 @@ impl Implement {
     pub fn mirror_ball() -> Self {
         let unit = |v: [f64; 3]| v.map(|x| x / dot(v, v).sqrt());
         let noise = |i: usize, k: usize| {
-            let x = (i as f64 * 12.9898 + k as f64 * 78.233).sin() * 43758.5453;
+            let x = libm::sin(i as f64 * 12.9898 + k as f64 * 78.233) * 43758.5453;
             x - x.floor()
         };
         // (direction, depth, width) of each dent.
@@ -228,13 +231,13 @@ impl Implement {
         // Distance of the surface from the hand point along unit direction d:
         // two unequal lobes, ripples, dents.
         let radius = |d: [f64; 3]| {
-            let lobes = 0.60 + 0.34 * (0.8 * d[1] + 0.6 * d[2]).abs().powf(1.4) + 0.10 * d[0];
+            let lobes = 0.60 + 0.34 * libm::pow((0.8 * d[1] + 0.6 * d[2]).abs(), 1.4) + 0.10 * d[0];
             let ripples = 1.0
-                + 0.13 * (5.0 * d[0] + 1.0).sin() * (4.0 * d[1] - 0.5).sin()
-                + 0.09 * (6.0 * d[2] + 2.0).sin();
+                + 0.13 * libm::sin(5.0 * d[0] + 1.0) * libm::sin(4.0 * d[1] - 0.5)
+                + 0.09 * libm::sin(6.0 * d[2] + 2.0);
             let dent: f64 = dents
                 .iter()
-                .map(|(at, depth, width)| 1.0 - depth * (-(1.0 - dot(d, *at)) / width).exp())
+                .map(|(at, depth, width)| 1.0 - depth * libm::exp(-(1.0 - dot(d, *at)) / width))
                 .product();
             0.066 * lobes * ripples * dent
         };
@@ -248,7 +251,7 @@ impl Implement {
         for i in 0..TILES {
             let z = 1.0 - 2.0 * (i as f64 + 0.5) / TILES as f64;
             let (r, phi) = ((1.0 - z * z).sqrt(), i as f64 * 2.39996);
-            let d = [z, r * phi.cos(), r * phi.sin()];
+            let d = [z, r * libm::cos(phi), r * libm::sin(phi)];
             let t1 = unit(cross(
                 d,
                 if d[0].abs() < 0.9 {
@@ -901,7 +904,7 @@ fn basis_mul(b: &[[f64; 3]; 3], v: [f64; 3]) -> [f64; 3] {
     std::array::from_fn(|i| b[0][i] * v[0] + b[1][i] * v[1] + b[2][i] * v[2])
 }
 fn rotate(v: [f64; 3], axis: [f64; 3], degrees: f64) -> [f64; 3] {
-    let (sin, cos) = degrees.to_radians().sin_cos();
+    let (sin, cos) = libm::sincos(degrees.to_radians());
     let perpendicular = cross(axis, v);
     let parallel = dot(axis, v) * (1.0 - cos);
     std::array::from_fn(|i| v[i] * cos + perpendicular[i] * sin + axis[i] * parallel)

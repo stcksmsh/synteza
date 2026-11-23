@@ -61,15 +61,15 @@ fn gather(u: f64, dir: f64) -> [f64; 3] {
     let rho = lerp(1.0, 0.15, s);
     let phi = PI + dir * TAU * u;
     [
-        0.9 * rho * phi.cos(),
-        0.5 + 0.45 * rho * phi.sin(),
+        0.9 * rho * libm::cos(phi),
+        0.5 + 0.45 * rho * libm::sin(phi),
         lerp(0.95, 0.25, s),
     ]
 }
 fn rise(u: f64, dir: f64) -> [f64; 3] {
     let s = smooth(u);
     [
-        0.15 * dir * (PI * u).sin(),
+        0.15 * dir * libm::sin(PI * u),
         lerp(0.5, 1.0, s),
         lerp(0.25, 0.7, s),
     ]
@@ -81,8 +81,8 @@ fn open(u: f64, dir: f64) -> [f64; 3] {
 /// Full-reach overhead arc from the `dir` side to the other.
 fn arc(u: f64, dir: f64) -> [f64; 3] {
     [
-        dir * 0.95 * (PI * u).cos(),
-        0.4 + 0.35 * (PI * u).sin(),
+        dir * 0.95 * libm::cos(PI * u),
+        0.4 + 0.35 * libm::sin(PI * u),
         0.95,
     ]
 }
@@ -90,17 +90,21 @@ fn arc(u: f64, dir: f64) -> [f64; 3] {
 /// scaled down), starting at the `dir` side, hand rising and
 /// falling twice. Azimuth runs past the back; the base keeps turning.
 fn circle(u: f64, dir: f64) -> [f64; 3] {
-    [dir * (0.95 - 2.3 * u), 0.45 + 0.3 * (TAU * u).sin(), 0.95]
+    [
+        dir * (0.95 - 2.3 * u),
+        0.45 + 0.3 * libm::sin(TAU * u),
+        0.95,
+    ]
 }
 fn sway(u: f64, dir: f64) -> [f64; 3] {
     [
-        0.45 * dir * (TAU * u).sin(),
-        0.35 + 0.08 * (2.0 * TAU * u).sin(),
+        0.45 * dir * libm::sin(TAU * u),
+        0.35 + 0.08 * libm::sin(2.0 * TAU * u),
         0.6,
     ]
 }
 fn reach(u: f64, dir: f64) -> [f64; 3] {
-    let bell = (PI * u).sin();
+    let bell = libm::sin(PI * u);
     [
         dir * 0.5 * smooth(u),
         lerp(0.3, 0.7, bell),
@@ -109,8 +113,8 @@ fn reach(u: f64, dir: f64) -> [f64; 3] {
 }
 fn eight(u: f64, dir: f64) -> [f64; 3] {
     [
-        0.7 * dir * (TAU * u).sin(),
-        0.5 + 0.3 * (2.0 * TAU * u).sin(),
+        0.7 * dir * libm::sin(TAU * u),
+        0.5 + 0.3 * libm::sin(2.0 * TAU * u),
         0.75,
     ]
 }
@@ -696,7 +700,7 @@ fn compile_pass(
     let frames = sources.iter().map(|s| s.absolute_rms.len()).min().unwrap();
     let level: Vec<f64> = (0..frames)
         .map(|i| {
-            let power = sources.iter().map(|s| s.absolute_rms[i].powi(2));
+            let power = sources.iter().map(|s| libm::pow(s.absolute_rms[i], 2.0));
             power.sum::<f64>().sqrt()
         })
         .collect();
@@ -895,7 +899,7 @@ fn compile_pass(
         let (mut sum, mut total) = ([0.0; 2], 0.0);
         let (first, last) = ((x - 3.0).max(0.0) as usize, (x + 4.0).max(0.0) as usize);
         for (i, at) in swell.iter().enumerate().take(last).skip(first) {
-            let w = (-0.5 * (i as f64 - x).powi(2)).exp();
+            let w = libm::exp(-0.5 * libm::pow(i as f64 - x, 2.0));
             sum = [sum[0] + w * at[0], sum[1] + w * at[1]];
             total += w;
         }
@@ -1143,7 +1147,7 @@ fn compile_pass(
         .map(|i| {
             let (mut sum, mut total) = ([0.0; 3], 0.0);
             for d in -radius..=radius {
-                let w = (-0.5 * (d as f64 / sigma).powi(2)).exp();
+                let w = libm::exp(-0.5 * libm::pow(d as f64 / sigma, 2.0));
                 let sample = raw[(i + d).clamp(0, raw.len() as isize - 1) as usize];
                 for k in 0..3 {
                     sum[k] += w * sample[k];
@@ -1407,9 +1411,9 @@ fn compile_pass(
         let distance = reach_m * (0.38 + 0.54 * p[2].clamp(0.0, 1.0));
         (
             [
-                distance * elevation.cos() * azimuth.cos(),
-                distance * elevation.cos() * azimuth.sin(),
-                distance * elevation.sin(),
+                distance * libm::cos(elevation) * libm::cos(azimuth),
+                distance * libm::cos(elevation) * libm::sin(azimuth),
+                distance * libm::sin(elevation),
             ],
             p[0] * 180.0,
         )
@@ -1448,7 +1452,7 @@ fn compile_pass(
             .any(|m| (m.time..m.time + m.hold_beats * beat).contains(&t));
         let (from, to) = (place(flow(s)).0, place(flow(s + step)).0);
         let pace = (0..3)
-            .map(|k| (to[k] - from[k]).powi(2))
+            .map(|k| libm::pow(to[k] - from[k], 2.0))
             .sum::<f64>()
             .sqrt()
             / step;
@@ -1474,7 +1478,7 @@ fn compile_pass(
             match (at.checked_sub(1).map(|i| hits[i]), hits.get(at)) {
                 (Some(last), Some(&next)) if next - last <= 4.0 * beat && !accent => {
                     let gap = ((next - last) / beat).max(0.9);
-                    let bump = (-(t - last) / (0.35 * beat * gap / 0.9)).exp();
+                    let bump = libm::exp(-(t - last) / (0.35 * beat * gap / 0.9));
                     // Less so in a gentle passage.
                     let mut weight = stabs[index.min(stabs.len() - 1)] * intensity(t);
                     if let Some(b) = &body {
@@ -1564,7 +1568,10 @@ fn compile_pass(
         .map(|&(knot, _)| {
             let (old, new) = (flow(reach[knot].unwrap()), flow(clock[knot]));
             let (a, b) = (place(old).0, place(new).0);
-            let metres = (0..3).map(|k| (a[k] - b[k]).powi(2)).sum::<f64>().sqrt();
+            let metres = (0..3)
+                .map(|k| libm::pow(a[k] - b[k], 2.0))
+                .sum::<f64>()
+                .sqrt();
             Cut {
                 time: grid[knot],
                 offset: std::array::from_fn(|k| old[k] - new[k]),
@@ -1591,7 +1598,7 @@ fn compile_pass(
         Vec::new()
     };
     let felt: Vec<f64> = ws.as_ref().map_or(Vec::new(), |w| {
-        let (k, mut x) = (1.0 - (-0.25f64).exp(), 0.0);
+        let (k, mut x) = (1.0 - libm::exp(-0.25f64), 0.0);
         let smooth = |f: &super::workspace::Field| {
             x += (f.approach - x) * k;
             x
@@ -1634,7 +1641,7 @@ fn compile_pass(
             let x = (t / step).clamp(0.0, (breath_phase.len() - 1) as f64);
             let i = (x.floor() as usize).min(breath_phase.len() - 2);
             let swell =
-                lerp(breath_phase[i], breath_phase[i + 1], x - i as f64).sin() * upper(b[10]);
+                libm::sin(lerp(breath_phase[i], breath_phase[i + 1], x - i as f64)) * upper(b[10]);
             p[1] += layered::HEIGHT * (b[1] - 0.5) + layered::BREATH.0 * swell;
             p[2] += layered::EXTENSION * (b[0] - 0.5) + layered::BREATH.1 * swell;
         }
@@ -1659,7 +1666,10 @@ fn compile_pass(
             lerp(base[2], m.pose[1], m.strength),
         ];
         let (a, b) = (place(from).0, place(to).0);
-        let travel = (0..3).map(|k| (a[k] - b[k]).powi(2)).sum::<f64>().sqrt();
+        let travel = (0..3)
+            .map(|k| libm::pow(a[k] - b[k], 2.0))
+            .sum::<f64>()
+            .sqrt();
         m.span = m.span.max(1.5 * travel / (0.6 * beat));
         if let Some(l) = layer {
             m.span *= l.span_scale.get(n).copied().unwrap_or(1.0);
@@ -1689,7 +1699,7 @@ fn compile_pass(
                 0.0
             } else if tau < 0.0 {
                 let x = (tau + span) / span;
-                smooth(x) + m.over * (PI * x).sin()
+                smooth(x) + m.over * libm::sin(PI * x)
             } else if tau < hold {
                 1.0
             } else {
@@ -1767,7 +1777,7 @@ fn compile_pass(
     // and turns forward. Changes of formation are eased, never cut.
     let count = arms.len();
     let rest = place(still(0.0, 1.0)).0;
-    let (rest_out, rest_up) = (rest[0].hypot(rest[1]), rest[2]);
+    let (rest_out, rest_up) = (libm::hypot(rest[0], rest[1]), rest[2]);
     let mut locals: Vec<Vec<([f64; 3], f64)>> = Vec::with_capacity(count);
     // Centre of the layout.
     let middle: [f64; 2] = std::array::from_fn(|k| {
@@ -1834,14 +1844,14 @@ fn compile_pass(
                 let last = bearings.last().copied().unwrap_or(aimed);
                 bearings.push(last + (aimed - last + 180.0).rem_euclid(360.0) - 180.0);
                 reach.push([
-                    lerp(rest_out, p[0].hypot(p[1]), on),
+                    lerp(rest_out, libm::hypot(p[0], p[1]), on),
                     lerp(rest_up, p[2], on),
                 ]);
             }
             (0..times.len())
                 .map(|i| {
                     let bearing = bell(&bearings, i as f64, 5.0);
-                    let (sin, cos) = bearing.to_radians().sin_cos();
+                    let (sin, cos) = libm::sincos(bearing.to_radians());
                     ([reach[i][0] * cos, reach[i][0] * sin, reach[i][1]], bearing)
                 })
                 .collect()
@@ -1868,9 +1878,9 @@ fn compile_pass(
     // neighbours it is 12 cm: out of step, an elbow reaches past its hand,
     // and with less the cross-check stopped arms dead there.
     let ball = 0.5 * clearance_m + held;
-    let keep_out = (ball + 0.02) / around.sin();
+    let keep_out = (ball + 0.02) / libm::sin(around);
     let shared = |plan: &ArmPlan, p: [f64; 3], limit: f64| -> [f64; 3] {
-        let (sin, cos) = plan.placement.yaw_degrees.to_radians().sin_cos();
+        let (sin, cos) = libm::sincos(plan.placement.yaw_degrees.to_radians());
         let o = plan.placement.origin_m;
         let world = [
             o[0] + cos * p[0] - sin * p[1],
@@ -1879,14 +1889,14 @@ fn compile_pass(
         if count == 1 {
             return [world[0], world[1], o[2] + p[2]];
         }
-        let own = (o[1] - middle[1]).atan2(o[0] - middle[0]);
+        let own = libm::atan2(o[1] - middle[1], o[0] - middle[0]);
         let (x, y) = (world[0] - middle[0], world[1] - middle[1]);
         // Eases out to the circle's edge over the last fifth of it.
-        let out = x.hypot(y);
+        let out = libm::hypot(x, y);
         let out = out.max(keep_out)
-            + 0.2 * keep_out * (-(out - keep_out).max(0.0) / (0.2 * keep_out)).exp();
-        let off = (y.atan2(x) - own + PI).rem_euclid(TAU) - PI;
-        let half = (around - ((ball + 0.12) / out).min(1.0).asin()).max(0.0);
+            + 0.2 * keep_out * libm::exp(-(out - keep_out).max(0.0) / (0.2 * keep_out));
+        let off = (libm::atan2(y, x) - own + PI).rem_euclid(TAU) - PI;
+        let half = (around - libm::asin(((ball + 0.12) / out).min(1.0))).max(0.0);
         // Untouched over the inner 70 % of the sector, eased into its
         // edge beyond. (Squeezing the whole sector bent the hand's path
         // over its own base, into a joint limit and out with a kick.)
@@ -1894,12 +1904,12 @@ fn compile_pass(
         let inside = if off.abs() <= knee {
             off
         } else {
-            off.signum() * (knee + edge * ((off.abs() - knee) / edge).tanh())
+            off.signum() * (knee + edge * libm::tanh((off.abs() - knee) / edge))
         };
         let angle = own + lerp(off, inside, limit);
         [
-            middle[0] + out * angle.cos(),
-            middle[1] + out * angle.sin(),
+            middle[0] + out * libm::cos(angle),
+            middle[1] + out * libm::sin(angle),
             o[2] + p[2],
         ]
     };
@@ -2079,13 +2089,13 @@ fn compile_pass(
                 if i > 0 && dt.is_finite() {
                     let (before, bearing) = targets[i - 1];
                     let travel = (0..3)
-                        .map(|k| (target[k] - before[k]).powi(2))
+                        .map(|k| libm::pow(target[k] - before[k], 2.0))
                         .sum::<f64>()
                         .sqrt();
                     let fast = smooth((travel / dt - 0.25) / 0.35);
                     let (lo, hi) = (i.saturating_sub(16), (i + 16).min(targets.len() - 1));
                     let steady = (targets[hi].1 - targets[lo].1) / (times[hi] - times[lo]);
-                    let way = (((facing - bearing) / dt - steady) / 30.0).tanh();
+                    let way = libm::tanh(((facing - bearing) / dt - steady) / 30.0);
                     // Energy sets how far the disc turns with the hand's travel.
                     let spin = SPIN_DEGREES_PER_METRE
                         * body_at(time)
@@ -2165,7 +2175,7 @@ fn compile_pass(
                 let mut scale: f64 = 1.0;
                 for (a, b) in before.iter().zip(&after) {
                     let travel = (0..3)
-                        .map(|k| (b.0[k] - a.0[k]).powi(2))
+                        .map(|k| libm::pow(b.0[k] - a.0[k], 2.0))
                         .sum::<f64>()
                         .sqrt();
                     // Toward another arm it brakes as toward a zone; moving
@@ -2317,7 +2327,7 @@ fn compile_pass(
                     .map(|i| -m.span + m.span * i as f64 / 4000.0)
                     .find(|&tau| {
                         let x = (tau + m.span) / m.span;
-                        smooth(x) + m.over * (PI * x).sin() >= 0.99
+                        smooth(x) + m.over * libm::sin(PI * x) >= 0.99
                     })
                     .unwrap_or(0.0);
                 m.time + tau * beat
@@ -2351,7 +2361,7 @@ fn bell(series: &[f64], x: f64, sigma: f64) -> f64 {
     let (mut sum, mut total) = (0.0, 0.0);
     let reach = (3.0 * sigma).ceil() as isize;
     for i in x.round() as isize - reach..=x.round() as isize + reach {
-        let w = (-0.5 * ((i as f64 - x) / sigma).powi(2)).exp();
+        let w = libm::exp(-0.5 * libm::pow((i as f64 - x) / sigma, 2.0));
         sum += w * series[i.clamp(0, series.len() as isize - 1) as usize];
         total += w;
     }
@@ -2381,10 +2391,10 @@ fn clearance(p: [f64; 3], zones: &[Zone], margin: f64) -> f64 {
         .map(|z| {
             (0..3)
                 .map(|i| {
-                    (z.min[i] - margin - p[i])
+                    let gap = (z.min[i] - margin - p[i])
                         .max(p[i] - z.max[i] - margin)
-                        .max(0.0)
-                        .powi(2)
+                        .max(0.0);
+                    libm::pow(gap, 2.0)
                 })
                 .sum::<f64>()
                 .sqrt()
@@ -2405,7 +2415,12 @@ impl Obstacles<'_> {
         self.others
             .iter()
             .map(|(q, more)| {
-                (0..3).map(|k| (p[k] - q[k]).powi(2)).sum::<f64>().sqrt() - extra - more
+                (0..3)
+                    .map(|k| libm::pow(p[k] - q[k], 2.0))
+                    .sum::<f64>()
+                    .sqrt()
+                    - extra
+                    - more
             })
             .fold(f64::INFINITY, f64::min)
     }
@@ -2668,7 +2683,10 @@ mod tests {
         };
         let travel = |a: f64, b: f64| {
             let (p, q) = (tip(a), tip(b));
-            (0..3).map(|k| (p[k] - q[k]).powi(2)).sum::<f64>().sqrt()
+            (0..3)
+                .map(|k| libm::pow(p[k] - q[k], 2.0))
+                .sum::<f64>()
+                .sqrt()
         };
         let (mut after, mut before) = (0.0, 0.0);
         for hit in [2.0, 3.0, 4.0, 5.0, 6.0] {
@@ -2789,7 +2807,7 @@ mod tests {
         let ring: Vec<ArmPlan> = (0..6)
             .map(|k| {
                 let degrees = 60.0 * k as f64;
-                let (sin, cos) = degrees.to_radians().sin_cos();
+                let (sin, cos) = libm::sincos(degrees.to_radians());
                 ArmPlan {
                     placement: Placement {
                         origin_m: [0.8 * cos, 0.8 * sin, 0.0],
@@ -2817,21 +2835,29 @@ mod tests {
             for a in 0..6 {
                 let hand = frame.agents[a].world_points.last().unwrap();
                 if i > 0 {
-                    let d = (0..3).map(|k| (hand[k] - last[a][k]).powi(2)).sum::<f64>();
+                    let d = (0..3)
+                        .map(|k| libm::pow(hand[k] - last[a][k], 2.0))
+                        .sum::<f64>();
                     peak = peak.max(d.sqrt() * 60.0);
                 }
                 last[a] = *hand;
                 let origin = ring[a].placement.origin_m;
-                moved[a] = moved[a].max((hand[0] - origin[0]).hypot(hand[1] - origin[1]));
+                moved[a] = moved[a].max(libm::hypot(hand[0] - origin[0], hand[1] - origin[1]));
                 let to = |b: &ArmPlan| {
-                    (hand[0] - b.placement.origin_m[0]).hypot(hand[1] - b.placement.origin_m[1])
+                    libm::hypot(
+                        hand[0] - b.placement.origin_m[0],
+                        hand[1] - b.placement.origin_m[1],
+                    )
                 };
                 across |= ring.iter().any(|b| to(b) < to(&ring[a]) - 1e-9);
-                middle = middle.min(hand[0].hypot(hand[1]));
+                middle = middle.min(libm::hypot(hand[0], hand[1]));
                 for b in a + 1..6 {
                     for (p, extra) in &bodies[a] {
                         for (q, more) in &bodies[b] {
-                            let apart = (0..3).map(|k| (p[k] - q[k]).powi(2)).sum::<f64>().sqrt();
+                            let apart = (0..3)
+                                .map(|k| libm::pow(p[k] - q[k], 2.0))
+                                .sum::<f64>()
+                                .sqrt();
                             closest = closest.min(apart - extra - more);
                         }
                     }
@@ -2866,7 +2892,7 @@ mod tests {
         let ring: Vec<ArmPlan> = (0..6)
             .map(|k| {
                 let degrees = 60.0 * k as f64;
-                let (sin, cos) = degrees.to_radians().sin_cos();
+                let (sin, cos) = libm::sincos(degrees.to_radians());
                 ArmPlan {
                     placement: Placement {
                         origin_m: [0.8 * cos, 0.8 * sin, 0.0],
@@ -2885,7 +2911,7 @@ mod tests {
             let last = |agent: &crate::ensemble::AgentFrame| *agent.world_points.last().unwrap();
             frame.agents.iter().map(last).collect()
         };
-        let apart = |p: [f64; 3], q: [f64; 3]| (p[0] - q[0]).hypot(p[1] - q[1]);
+        let apart = |p: [f64; 3], q: [f64; 3]| libm::hypot(p[0] - q[0], p[1] - q[1]);
         let (mut closest, mut still) = (f64::INFINITY, [0; 6]);
         for i in 40..=440 {
             let (now, soon) = (
@@ -2896,7 +2922,7 @@ mod tests {
                 still[a] += usize::from(apart(now[a], soon[a]) * 60.0 < 0.02);
                 for b in a + 1..6 {
                     let gap = (0..3)
-                        .map(|k| (now[a][k] - now[b][k]).powi(2))
+                        .map(|k| libm::pow(now[a][k] - now[b][k], 2.0))
                         .sum::<f64>()
                         .sqrt();
                     closest = closest.min(gap - 2.0 * held);
@@ -2995,7 +3021,10 @@ mod tests {
         };
         let moved = |a: f64, b: f64| {
             let (p, q) = (tip(a), tip(b));
-            (0..3).map(|k| (p[k] - q[k]).powi(2)).sum::<f64>().sqrt()
+            (0..3)
+                .map(|k| libm::pow(p[k] - q[k], 2.0))
+                .sum::<f64>()
+                .sqrt()
         };
         assert!(
             moved(4.25, 4.45) < 0.01,
@@ -3096,7 +3125,10 @@ mod tests {
                     .collect();
                 if !last.is_empty() {
                     for (h, l) in hands.iter().zip(&last) {
-                        let d = (0..3).map(|k| (h[k] - l[k]).powi(2)).sum::<f64>().sqrt();
+                        let d = (0..3)
+                            .map(|k| libm::pow(h[k] - l[k], 2.0))
+                            .sum::<f64>()
+                            .sqrt();
                         peak = peak.max(d * 60.0);
                     }
                 }
@@ -3106,7 +3138,10 @@ mod tests {
                     .collect();
                 for (p, e) in &bodies[0] {
                     for (q, f) in &bodies[1] {
-                        let d = (0..3).map(|k| (p[k] - q[k]).powi(2)).sum::<f64>().sqrt();
+                        let d = (0..3)
+                            .map(|k| libm::pow(p[k] - q[k], 2.0))
+                            .sum::<f64>()
+                            .sqrt();
                         closest = closest.min(d - e - f);
                     }
                 }
@@ -3138,7 +3173,7 @@ mod tests {
         (0..6)
             .map(|k| {
                 let degrees = 60.0 * k as f64;
-                let (sin, cos) = degrees.to_radians().sin_cos();
+                let (sin, cos) = libm::sincos(degrees.to_radians());
                 ArmPlan {
                     placement: Placement {
                         origin_m: [0.8 * cos, 0.8 * sin, 0.0],
@@ -3150,7 +3185,8 @@ mod tests {
             .collect()
     }
 
-    /// Whole-score digests, recorded before the workspace refactor. A change
+    /// Whole-score digests, recorded before the workspace refactor and again,
+    /// by the owner's decision, when the math moved to the pure-Rust libm. A change
     /// here means the dance changed; never update a constant to make it pass.
     #[test]
     fn golden_digests_of_compile_ensemble() {
@@ -3166,18 +3202,18 @@ mod tests {
             (
                 "figures",
                 compile_figures(&steady, config(), rig.clone(), &[]),
-                0xd520440a1967779e,
+                0xa74e97e2e1ba02ad,
             ),
-            ("ring", ensemble(&steady), 0xe19af5b5028cfb20),
+            ("ring", ensemble(&steady), 0x8476eca618bae431),
             (
                 "mirrored",
                 ensemble(&super::super::tests::fixture(0.1, 0.2)),
-                0x004939ba7322cca6,
+                0x96f5d30a35f9f11f,
             ),
             (
                 "cut",
                 compile_figures(&cut, config(), rig.clone(), &[]),
-                0xf90eba349ed91a06,
+                0x8dfb8054034447b7,
             ),
         ];
         assert!(cases[3]
@@ -3380,7 +3416,7 @@ mod tests {
         let still = |fr: &[([f64; 5], Vec<[f64; 3]>)]| {
             let speed = |i: usize| {
                 (0..3)
-                    .map(|k| (fr[i + 1].1[5][k] - fr[i].1[5][k]).powi(2))
+                    .map(|k| libm::pow(fr[i + 1].1[5][k] - fr[i].1[5][k], 2.0))
                     .sum::<f64>()
                     .sqrt()
                     * 60.0
@@ -3416,7 +3452,7 @@ mod tests {
             f.iter()
                 .map(|f| {
                     (0..3)
-                        .map(|k| (f.1[5][k] - f.1[1][k]).powi(2))
+                        .map(|k| libm::pow(f.1[5][k] - f.1[1][k], 2.0))
                         .sum::<f64>()
                         .sqrt()
                 })
@@ -3462,10 +3498,10 @@ mod tests {
             let (mut c, mut s) = (0.0, 0.0);
             for (i, v) in q.iter().enumerate() {
                 let w = std::f64::consts::TAU * hz * i as f64 / 60.0;
-                c += (v - m) * w.cos();
-                s += (v - m) * w.sin();
+                c += (v - m) * libm::cos(w);
+                s += (v - m) * libm::sin(w);
             }
-            2.0 * c.hypot(s) / q.len() as f64
+            2.0 * libm::hypot(c, s) / q.len() as f64
         };
         let breathing = |depth: f64, rate: f64| {
             let mut b = NEUTRAL;

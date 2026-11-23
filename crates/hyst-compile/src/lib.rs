@@ -127,7 +127,8 @@ pub fn segment_bounds(start: &Knot, end: &Knot) -> Result<SegmentBounds, &'stati
             bounds.min_position_degrees[joint] = start.joints[joint].min(end.joints[joint]);
             bounds.max_position_degrees[joint] = start.joints[joint].max(end.joints[joint]);
             bounds.max_speed_degrees_per_second[joint] = distance * Q_V / dt;
-            bounds.max_acceleration_degrees_per_second2[joint] = distance * Q_A / dt.powi(2);
+            bounds.max_acceleration_degrees_per_second2[joint] =
+                distance * Q_A / libm::pow(dt, 2.0);
             continue;
         }
 
@@ -141,7 +142,9 @@ pub fn segment_bounds(start: &Knot, end: &Knot) -> Result<SegmentBounds, &'stati
             .fold(0.0, f64::max);
         bounds.max_acceleration_degrees_per_second2[joint] = points
             .windows(3)
-            .map(|triple| (20.0 * (triple[2] - 2.0 * triple[1] + triple[0]) / dt.powi(2)).abs())
+            .map(|triple| {
+                (20.0 * (triple[2] - 2.0 * triple[1] + triple[0]) / libm::pow(dt, 2.0)).abs()
+            })
             .fold(0.0, f64::max);
     }
     Ok(bounds)
@@ -222,7 +225,9 @@ mod tests {
             let p1 = sample_segment(&start, &end, start.time + h)[joint];
             let p2 = sample_segment(&start, &end, start.time + 2.0 * h)[joint];
             assert!(((p1 - p0) / h - start.velocity[joint]).abs() < 0.001);
-            assert!(((p2 - 2.0 * p1 + p0) / h.powi(2) - start.acceleration[joint]).abs() < 0.01);
+            assert!(
+                ((p2 - 2.0 * p1 + p0) / libm::pow(h, 2.0) - start.acceleration[joint]).abs() < 0.01
+            );
         }
         let bounds = segment_bounds(&start, &end).unwrap();
         for i in 0..=1_000 {

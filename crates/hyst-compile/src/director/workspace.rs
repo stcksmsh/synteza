@@ -290,7 +290,7 @@ pub fn observations(input: &ObsInput) -> Vec<BeatObs> {
         .unwrap_or(0);
     let level: Vec<f64> = (0..frames)
         .map(|i| {
-            let power = input.absolute_rms.iter().map(|s| s[i].powi(2));
+            let power = input.absolute_rms.iter().map(|s| libm::pow(s[i], 2.0));
             power.sum::<f64>().sqrt()
         })
         .collect();
@@ -409,7 +409,7 @@ const PEAK_DECAY: f64 = 256.0;
 
 /// Fraction of the way a first-order system moves in one beat.
 fn step_rate(tau: f64) -> f64 {
-    1.0 - (-1.0 / tau).exp()
+    1.0 - libm::exp(-1.0 / tau)
 }
 
 fn approach(x: f64, target: f64, tau: f64) -> f64 {
@@ -484,8 +484,8 @@ fn pearson(a: &[f64], b: &[f64]) -> f64 {
     let (mut ab, mut aa, mut bb) = (0.0, 0.0, 0.0);
     for (x, y) in a.iter().zip(b) {
         ab += (x - ma) * (y - mb);
-        aa += (x - ma).powi(2);
-        bb += (y - mb).powi(2);
+        aa += libm::pow(x - ma, 2.0);
+        bb += libm::pow(y - mb, 2.0);
     }
     if aa < 1e-12 || bb < 1e-12 {
         // A flat rhythm matches only another flat rhythm of the same height.
@@ -993,7 +993,7 @@ mod workspace_tests {
         let w = run_mode(WorkspaceMode::Rehearsed, &obs, &drop_at(40));
         // Steady intensity is 1; the gain settles at GAIN_STEADY, jumps, then relaxes.
         let excess = |n: usize| w.field[n].gain - GAIN_STEADY;
-        let tau = 16.0 / (excess(42) / excess(58)).ln();
+        let tau = 16.0 / libm::log(excess(42) / excess(58));
         println!(
             "afterglow: excess {:.4} -> {:.4}, tau {tau:.3}",
             excess(42),

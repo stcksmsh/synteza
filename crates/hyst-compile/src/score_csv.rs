@@ -226,7 +226,7 @@ pub fn check(text: &str) -> Result<Vec<Breach>, String> {
         .windows(2)
         .map(|w| {
             (0..3)
-                .map(|k| (w[1][5][k] - w[0][5][k]).powi(2))
+                .map(|k| libm::pow(w[1][5][k] - w[0][5][k], 2.0))
                 .sum::<f64>()
                 .sqrt()
                 * hz
