@@ -695,10 +695,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "hyst-hw"
-version = "0.1.0"
-
-[[package]]
 name = "hyst-output"
 version = "0.1.0"
 dependencies = [
