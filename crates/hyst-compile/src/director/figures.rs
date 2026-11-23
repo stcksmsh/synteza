@@ -252,7 +252,7 @@ thread_local! {
 fn dl(f: &str, a: &[f64], r: f64) -> f64 {
     DIAG.with(|d| {
         if let Some(v) = d.borrow_mut().as_mut() {
-            if v.len() < 4000 {
+            if v.len() < 20000 {
                 let ins: Vec<String> = a.iter().map(|x| format!("{:016x}", x.to_bits())).collect();
                 v.push(format!("{f} {} {:016x} {r:e}", ins.join(","), r.to_bits()));
             }
@@ -1857,6 +1857,7 @@ fn compile_pass(
                 .map(|i| {
                     let bearing = bell(&bearings, i as f64, 5.0);
                     let (sin, cos) = bearing.to_radians().sin_cos();
+                    dl("bear", &[bearing, reach[i][0], reach[i][1], bearings[i], sin], cos);
                     ([reach[i][0] * cos, reach[i][0] * sin, reach[i][1]], bearing)
                 })
                 .collect()
@@ -1887,6 +1888,7 @@ fn compile_pass(
     let shared = |plan: &ArmPlan, p: [f64; 3], limit: f64| -> [f64; 3] {
         let (sin, cos) = plan.placement.yaw_degrees.to_radians().sin_cos();
         let o = plan.placement.origin_m;
+        dl("shin", &[p[0], p[1], p[2], sin], cos);
         let world = [
             o[0] + cos * p[0] - sin * p[1],
             o[1] + sin * p[0] + cos * p[1],
