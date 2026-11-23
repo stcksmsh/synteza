@@ -1,148 +1,74 @@
-# the СИНТЕЗА visualizer
+# synteza
 
-A framework-agnostic visualizer package that reacts to musical *structure* —
-builds, drops, breaks, groove — instead of instantaneous amplitude. It's
-built on hysteresis: the image itself accumulates history, so what's on
-screen depends on the whole recent signal, not just this instant. It winds
-up during builds, releases on drops, and goes suspended during breaks.
+A native Rust music visualizer engine. The image has memory: a feedback field accumulates and fades the last seconds of
+the music, so what you see depends on recent history and on musical structure (builds, drops, breaks), not only on
+instantaneous amplitude. synteza is meant to be both a standalone tool for artists and the video core of the kabl
+project (kabl depends on synteza, never the reverse).
 
-See `AGENTS.md` §2 for the design doc and `IO_PAGE_CHANGESET.md` §6 (in
-`stcksmsh.github.io`) for the interface as actually integrated. Ships as a
-package the host mounts once:
+## Status
 
-```ts
-import { init } from 'sinteza-viz'
+Honest summary of what runs today:
 
-const instance = init(canvas, {
-  accent: [0.68, 0.2, 33], // OKLCH [L, C, H]
-  tier: 'full',
-  getAudioContext: () => audioBus?.ctx ?? null, // null until the host's first play click
-  getAnalyser: () => audioBus?.analyser ?? null,
-})
-instance.setAccent([0.7, 0.15, 200])
-instance.setTier('cheap')
-instance.resize()
-instance.destroy()
-```
+- Offline renders. `hyst-render` draws a Julia-set substrate through a memory field, bloom, composite and an
+  oscilloscope-style beam on the GPU (wgpu), driven by features that `hyst-audio` extracts from a WAV file. A separate
+  Mandelbulb pass renders standalone. Both are exercised by examples that write frames and, if `ffmpeg` is on `PATH`,
+  an mp4 under the crate's `test-output/` directory.
+- Audio playback and live feature extraction (`hyst-audio` example `play`) on the default output device.
+- CI (`.github/workflows/rust.yml`): fmt, clippy, tests, and the render tests on a software Vulkan driver (lavapipe).
 
-No DOM ownership beyond the canvas, no routing, no player UI, no
-`AudioContext` creation — all of that is the host's job (the IO page repo).
-Transport (`play`/`pause`/`seek`/`trackchange`/`position`) and the
-precomputed sidecar URL (`trackchange`'s `track.envelope`) aren't pushed
-through this API at all — `init()` listens for them itself on a `window`
-`"player:transport"` `CustomEvent` bus, matching the host's own
-`src/lib/player-bus.ts`. `getAudioContext`/`getAnalyser` are polled (not
-assumed present at call time) since the shared bus is created lazily on the
-host's first play click, well after this package typically mounts.
+There is **no live native visualizer window yet**: nothing opens a window and renders in real time while music plays.
+See `docs/PLAN.md` section 1 for where the project stands and where it is going. The frozen TypeScript browser
+visualizer in `src/` and `tools/` is reference material only.
 
-Three-layer architecture:
+## Build and test
 
-- **Layer 1 (`src/audio/worklet/`)** — feature extraction in an
-  `AudioWorklet`: own windowed FFT, perceptual band split (sub/low/mid/
-  presence/air), spectral centroid, spectral flatness, spectral-flux novelty,
-  a trigger-locked waveform ring buffer for the oscilloscope beam.
-- **Layer 2 (`src/audio/worklet/brain/`)** — musical state: beat tracking
-  (tempo + a phase-locked oscillator that free-runs through breaks), build
-  detector, drop detector, break/tension detector. Fused with a precomputed
-  sidecar's structure when one is loaded (`src/audio/StructureSource.ts`) —
-  detail (bands/onsets/energy) is always live either way.
-- **Layer 3 (`src/render/choreography/`, `src/render/worker/scenes/julia/`,
-  `src/render/worker/passes/`)** — choreography (spring-damper driven
-  parameters) and the visual scene, rendered via WebGL2 on an
-  `OffscreenCanvas` in a dedicated Worker: an animated Julia-set substrate,
-  fed into a curl-noise-advected feedback field that is THE signature
-  layer — the image itself accumulates and decays the last few seconds of
-  the song — an oscilloscope beam riding on top, and onset-triggered
-  particles dragged through the same flow field. Earned symmetry (a
-  tension/build-driven domain warp, snapping to full symmetry for one bar
-  on a drop) modulates the feedback field's own advection, never applied as
-  a constant filter.
-
-## Offline sidecar tool
+Needs a Rust toolchain (CI uses 1.93.0) and, on Linux, ALSA development headers (`libasound2-dev`) and `pkg-config`.
+The render tests need a Vulkan adapter.
 
 ```sh
-npm run analyze -- path/to/master.wav [output.sidecar.json]
+cargo fmt --all
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace --exclude hyst-render    # everything that needs no GPU
+cargo test -p hyst-render                       # needs a GPU or lavapipe
+npx vitest run                                  # the frozen TypeScript tests (after npm install)
 ```
 
-Ingests one WAV master (no DAW project, no stems) and emits a
-`<slug>.sidecar.json` (schema 2) — tempo, beats, sections, structural events,
-an onset list, and per-band/centroid/flatness energy envelopes. This repo
-produces it; the host serves it as a static asset and calls `loadSidecar(url)`
-on `trackchange`.
-
-**Two ways a host can use it**, and `init()` picks automatically based on
-whether live audio ever attaches:
-- **Self-hosted `<audio>`/AudioContext**: sidecar supplies structure (beats,
-  drops, sections — with look-ahead), live analysis supplies detail. This is
-  the original mode.
-- **SoundCloud/Bandcamp embeds (no `AnalyserNode` reachable at all)**: if
-  it's your own track, run `analyze` against the original master and the
-  richer schema-2 sidecar drives the *entire* visual from playback position
-  alone — feed `setPosition` from the embed's own position API (e.g.
-  SoundCloud Widget's `PLAY_PROGRESS`), no Worklet attach needed. The
-  oscilloscope beam falls back to its idle Lissajous (no real waveform
-  survives an offline envelope) — everything else is genuinely reactive.
-
-See `AGENTS.md` §2 ("Current architecture") for the full fusion rules.
-
-## Develop
+## Run the examples
 
 ```sh
-npm install
-npm run dev
+# offline Julia render of a WAV file (writes under crates/hyst-render/test-output/)
+cargo run --release -p hyst-render --example audio_driven_render -- path/to/track.wav
+# offline Mandelbulb render
+cargo run --release -p hyst-render --example mandelbulb_render -- path/to/track.wav
+# plays the file on the default output device and prints live features (makes sound)
+cargo run -p hyst-audio --example play -- path/to/track.wav [latency_ms]
 ```
 
-Opens at `http://localhost:5173/sinteza-viz/`. This is a local dev harness
-only (`src/main.ts`) — a bare file picker exercising the real `init()` API,
-not what ships. Building the actual package is `npm run build:lib`.
+## Crates
 
-## Build
+- `hyst-core`: signal bus types, sidecar schema, project loading, the `VizOutput` trait, errors.
+- `hyst-audio`: playback, audio clock, FFT/bands/chroma features, beat tracking (PLL); examples `play` and `beat_pll`.
+- `hyst-render`: wgpu renderer, `.hyst` shader format parser and ISF translation, Julia, Mandelbulb, memory field,
+  bloom, composite and beam passes.
+- `hyst-script`: Lua scripting runtime (`mlua`) with an instruction budget and fault isolation.
+- `hyst-choreo`: choreography primitives (curves, moves, formations); pure math, no hardware.
+- `hyst-output`: physical-output plumbing built on `VizOutput` (dense element fields with diff-only transmission and failure handling).
 
-```sh
-npm run build:lib   # the package: dist/index.js + dist/index.d.ts + dist/worklets/
-npm run build       # the local dev-harness demo site (GitHub Pages)
-npm run preview
-```
+`scripts/` holds the Node/TypeScript offline analysis pipeline (`npm run analyze -- master.wav`), which emits the
+sidecar JSON. The dance compiler and the arm's learned body and brain moved to
+[afekt](https://github.com/stcksmsh/afekt), which depends on this repo.
 
-`vite.config.ts` sets `base: '/sinteza-viz/'` to match the demo's GitHub
-Pages project-pages subpath; it does not affect the library build.
+## Documents
 
-## Test
+- `docs/PLAN.md`: the project plan (a proposal, not a commitment).
+- `docs/STATE.md`: current state, what is in flight and what is next.
+- `docs/REFERENCE.md`: reference hardware and tracks.
+- `docs/THIRD_PARTY_LICENCES.md`: third-party licences.
+- `AGENTS.md`: rules for agents working in this repo.
+- `docs/LEGACY_TS.md`: the frozen TypeScript system, for porting reference.
 
-```sh
-npm run typecheck
-npm test
-```
+## Licence
 
-Unit tests use deterministic synthetic signals (click trains, synthetic
-spectra) for CI-verifiable regression coverage of the DSP/detector math.
-Perceptual tuning against real audio happens via the dev harness, not in CI.
-
-## Patchbay editor
-
-```sh
-npm run patchbay
-```
-
-A dev-only visual node-graph tool for authoring the patch graph that drives
-the screen (and, in progress, physical fixtures — DMX/LED/servo/laser) —
-runs a real render-worker instance, live-editable. See
-[`docs/patchbay-editor.md`](docs/patchbay-editor.md) for the concepts
-(signal bus / patch graph / targets / fixtures) and
-[`docs/isf-shaders.md`](docs/isf-shaders.md) for loading a real
-[ISF](https://isf.video/) shader as the screen scene, and
-[`docs/osc.md`](docs/osc.md) for streaming the signal bus to external tools
-(TouchDesigner, VCV Rack, Ableton, ...) as real OSC, and
-[`docs/dmx-out.md`](docs/dmx-out.md) for sending patched fixtures to a real
-lighting rig over Art-Net/sACN/USB, [`docs/midi.md`](docs/midi.md) for
-real MIDI CC input and clock/beat sync, and [`docs/ilda.md`](docs/ilda.md)
-for the ILDA file format and the Ether Dream live laser DAC protocol.
-
-## Notes
-
-- No microphone input — file-load only in the dev harness.
-- The AudioWorklet is bundled separately (`vite.worklet.config.ts`) into
-  `public/worklets/feature-worklet.js`, since Vite's `new URL(...)` idiom only
-  special-cases `new Worker()`, not `audioWorklet.addModule()`. Consumers of
-  the published package may need to pass `workletUrl` explicitly if their
-  bundler doesn't resolve the default (see `src/index.ts`).
+Code (Rust crates, scripts, shaders, hyst files): GPL-3.0-or-later, see `LICENSE`. Art and documentation (renders,
+images, video, written docs): CC BY-SA 4.0, see `LICENSE-CC-BY-SA-4.0.txt`. Details in `COPYING.md`. Third-party
+material keeps its own licence.
