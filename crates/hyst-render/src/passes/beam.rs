@@ -32,6 +32,64 @@ pub fn render_beam(
     aspect: f32,
     half_width: f32,
 ) -> Result<(), GpuError> {
+    draw_beam(
+        ctx,
+        output,
+        segments,
+        color.map(|c| c * intensity),
+        aspect,
+        half_width,
+        wgpu::BlendState::ALPHA_BLENDING,
+    )
+}
+
+/// Adds the beam's light onto `output` instead of alpha-blending it over.
+/// Meant for an HDR target such as the memory field: `intensity` may go
+/// well past 1, so the line feeds bloom and leaves a trail as the field
+/// decays and advects it.
+pub fn render_beam_additive(
+    ctx: &GpuContext,
+    output: &OffscreenTarget,
+    segments: &[Segment],
+    color: [f32; 3],
+    intensity: f32,
+    aspect: f32,
+    half_width: f32,
+) -> Result<(), GpuError> {
+    let add = wgpu::BlendComponent {
+        src_factor: wgpu::BlendFactor::One,
+        dst_factor: wgpu::BlendFactor::One,
+        operation: wgpu::BlendOperation::Add,
+    };
+    let keep_alpha = wgpu::BlendComponent {
+        src_factor: wgpu::BlendFactor::Zero,
+        dst_factor: wgpu::BlendFactor::One,
+        operation: wgpu::BlendOperation::Add,
+    };
+    draw_beam(
+        ctx,
+        output,
+        segments,
+        color.map(|c| c * intensity),
+        aspect,
+        half_width,
+        wgpu::BlendState {
+            color: add,
+            alpha: keep_alpha,
+        },
+    )
+}
+
+/// `light` is colour times intensity: the shader only ever uses their product.
+fn draw_beam(
+    ctx: &GpuContext,
+    output: &OffscreenTarget,
+    segments: &[Segment],
+    light: [f32; 3],
+    aspect: f32,
+    half_width: f32,
+    blend: wgpu::BlendState,
+) -> Result<(), GpuError> {
     if segments.is_empty() {
         return Ok(());
     }
@@ -84,7 +142,7 @@ pub fn render_beam(
             ],
         });
     let vertex_params: [f32; 4] = [aspect, half_width, 0.0, 0.0];
-    let fragment_params: [f32; 4] = [color[0], color[1], color[2], intensity];
+    let fragment_params: [f32; 4] = [light[0], light[1], light[2], 1.0];
     let vbuf = ctx
         .device
         .create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -186,8 +244,8 @@ pub fn render_beam(
                 module: &fs_module,
                 entry_point: "main",
                 targets: &[Some(wgpu::ColorTargetState {
-                    format: wgpu::TextureFormat::Rgba8Unorm,
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    format: output.format(),
+                    blend: Some(blend),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
                 compilation_options: Default::default(),

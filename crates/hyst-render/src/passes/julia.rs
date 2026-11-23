@@ -174,23 +174,13 @@ pub struct JuliaDriver {
     frame: u32,
     /// Running reset counter; informational (not read by the shader).
     cycle_index: u32,
-    /// Circular EMA of `chroma_root_hue` (~1s now, was ~0.25s → visible
-    /// hue flicker). A smoothing filter on a bounded instantaneous value,
-    /// not a phase accumulator.
-    hue_smoothed: f32,
-    /// Continuous color-cycle phase (extra shimmer independent of chroma),
-    /// integrated by a smooth `dt * rate(energy_env)`.
-    color_phase: f32,
+    colour: ColourEnv,
     /// Heavily-smoothed (~1.5s) `bus.energy`. **Every** audio value that
     /// modulates a rate or an amplitude in `update` reads this, not the raw
     /// per-hop value — the raw signal's frame-to-frame variance driven
     /// straight into `c`-motion / zoom-rate / palette is exactly what read
     /// as twitchy.
     energy_env: f32,
-    /// ~0.6s EMAs of `centroid`/`flatness` (they set palette accent/mix
-    /// every frame — same twitch reason).
-    centroid_env: f32,
-    flatness_env: f32,
     /// Previous frame's `c`, so `update` can hard-cap the per-frame delta —
     /// belt-and-suspenders against any future retuning reintroducing a
     /// c-snap.
@@ -221,11 +211,8 @@ impl JuliaDriver {
             pan_target: pan,
             frame: 0,
             cycle_index: 0,
-            hue_smoothed: 0.0,
-            color_phase: 0.0,
+            colour: ColourEnv::new(),
             energy_env: 0.0,
-            centroid_env: 0.5,
-            flatness_env: 0.3,
             c_prev: base_c,
         }
     }
@@ -242,11 +229,8 @@ impl JuliaDriver {
         // amplitude. Raw per-hop `bus.*` has large frame-to-frame variance;
         // feeding it straight into c-motion / zoom-rate / palette was the
         // "INCREDIBLY twitchy" report. Simple one-pole EMAs, ~1.5s (energy)
-        // and ~0.6s (colour) time constants.
-        let ema = |cur: f32, target: f32, tc: f32| cur + (target - cur) * (dt / tc).min(1.0);
-        self.energy_env = ema(self.energy_env, bus.energy.clamp(0.0, 1.0), 1.5);
-        self.centroid_env = ema(self.centroid_env, bus.centroid.clamp(0.0, 1.0), 0.6);
-        self.flatness_env = ema(self.flatness_env, bus.flatness.clamp(0.0, 1.0), 0.6);
+        // and ~0.6s (colour, in `ColourEnv`) time constants.
+        self.energy_env += (bus.energy.clamp(0.0, 1.0) - self.energy_env) * (dt / 1.5).min(1.0);
         let e = self.energy_env;
 
         // --- Zoom: a smooth continuous dive whose rate breathes only with
@@ -254,9 +238,6 @@ impl JuliaDriver {
         // never scaling `zoom_log`/`t` directly.
         let zoom_rate = BASE_ZOOM_RATE * (0.6 + 0.8 * e);
         self.zoom_log += dt * zoom_rate;
-
-        // --- Colour shimmer phase: smooth rate.
-        self.color_phase += dt * (0.04 + 0.12 * e);
 
         // --- Rare "cut to a new dive" once the dive genuinely bottoms out
         // at ZOOM_FLOOR (at this rate range, longer than a typical clip).
@@ -320,7 +301,46 @@ impl JuliaDriver {
         self.pan[0] += sx;
         self.pan[1] += sy;
 
-        // --- Circular (shortest-path) hue smoothing, now ~1s.
+        self.colour.update(dt, bus, e).nav_state(c, self.pan, zoom)
+    }
+}
+
+/// The palette half of a driver's output, shared by [`JuliaDriver`] and
+/// [`CuratedJuliaDriver`]: smoothed hue, accent, mix and shimmer phase.
+#[derive(Clone, Copy, Debug)]
+struct ColourEnv {
+    /// Circular EMA of `chroma_root_hue` (~1s now, was ~0.25s → visible
+    /// hue flicker). A smoothing filter on a bounded instantaneous value,
+    /// not a phase accumulator.
+    hue_smoothed: f32,
+    /// Continuous color-cycle phase (extra shimmer independent of chroma),
+    /// integrated by a smooth `dt * rate(energy_env)`.
+    color_phase: f32,
+    /// ~0.6s EMAs of `centroid`/`flatness` (they set palette accent/mix
+    /// every frame — raw per-hop values twitch).
+    centroid_env: f32,
+    flatness_env: f32,
+}
+
+impl ColourEnv {
+    fn new() -> Self {
+        Self {
+            hue_smoothed: 0.0,
+            color_phase: 0.0,
+            centroid_env: 0.5,
+            flatness_env: 0.3,
+        }
+    }
+
+    /// `energy_env` is the caller's already-smoothed energy.
+    fn update(&mut self, dt: f32, bus: &hyst_core::SignalBus, energy_env: f32) -> &Self {
+        let ema = |cur: f32, target: f32, tc: f32| cur + (target - cur) * (dt / tc).min(1.0);
+        self.centroid_env = ema(self.centroid_env, bus.centroid.clamp(0.0, 1.0), 0.6);
+        self.flatness_env = ema(self.flatness_env, bus.flatness.clamp(0.0, 1.0), 0.6);
+        // Colour shimmer phase: smooth rate.
+        self.color_phase += dt * (0.04 + 0.12 * energy_env);
+
+        // Circular (shortest-path) hue smoothing, ~1s.
         let hue_target = bus.chroma_root_hue.rem_euclid(1.0);
         let mut diff = hue_target - self.hue_smoothed;
         if diff > 0.5 {
@@ -329,8 +349,11 @@ impl JuliaDriver {
             diff += 1.0;
         }
         self.hue_smoothed = (self.hue_smoothed + diff * (dt / 1.0).min(1.0)).rem_euclid(1.0);
+        self
+    }
 
-        // --- Palette accent/mix from the SMOOTHED colour features.
+    fn nav_state(&self, c: [f32; 2], pan: [f32; 2], zoom: f32) -> JuliaNavState {
+        // Palette accent/mix from the SMOOTHED colour features.
         const COOL: [f32; 3] = [0.25, 0.45, 1.0];
         const WARM: [f32; 3] = [1.0, 0.55, 0.25];
         let ctr = self.centroid_env;
@@ -339,20 +362,21 @@ impl JuliaDriver {
             COOL[1] + (WARM[1] - COOL[1]) * ctr,
             COOL[2] + (WARM[2] - COOL[2]) * ctr,
         ];
-        let palette_mix = 0.2 + 0.6 * self.flatness_env;
-
         JuliaNavState {
             c,
-            pan: self.pan,
+            pan,
             zoom,
             accent,
             hue_shift: self.hue_smoothed,
-            palette_mix,
+            palette_mix: 0.2 + 0.6 * self.flatness_env,
             palette_flip: self.color_phase.rem_euclid(1.0),
             flash: 0.0,
         }
     }
 }
+
+mod curated;
+pub use curated::{CuratedJuliaDriver, CURATED_C, DIRECT_ZOOM_MIN};
 
 /// Fixed golden-angle-spread circle `driven_by_time`/`JuliaDriver` both
 /// place discrete region centers on: same `c = [-0.4 + 0.35*cos(angle),

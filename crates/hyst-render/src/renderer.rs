@@ -1,23 +1,34 @@
 //! One real frame loop: Julia substrate -> memory field ping-pong ->
-//! persistence/decay -> bloom -> composite -> beam on top -> final
+//! persistence/decay -> bloom -> composite -> beam -> final
 //! `OffscreenTarget`. R2's own done-when bar (plan §4): "Julia substrate +
 //! memory field + beam render". **Not claimed**: a pixel-perfect diff
 //! against the frozen browser build — that needs a browser, out of reach
 //! here; flagged, not faked.
 //!
-//! Beam compositing deviates from the original's shader-side foreground/
-//! background split: the beam is drawn with real alpha blending directly
-//! onto the tonemapped composite output (simplest correct thing that still
-//! draws real hardware line geometry on top of the substrate), rather than
-//! being fed into `composite.frag.glsl` as another sampled input.
+//! Two looks share the loop ([`Look`]). `Before` is the original: 8-bit
+//! targets, perturbation Julia at every depth, single-level bloom,
+//! per-channel Reinhard, and the beam alpha-blended onto the tonemapped
+//! output. `After` keeps the field, persistence and bloom in `Rgba16Float`,
+//! draws the beam additively into the memory field before tonemapping (as
+//! the TS original's `renderForeground` does, so it trails and blooms),
+//! uses a small mip-chain bloom, a hue-preserving tonemap with dither, a
+//! tiling fbm flow noise under a repeat sampler, and direct Julia
+//! iteration above `DIRECT_ZOOM_MIN`.
 
 use crate::gpu::{GpuContext, GpuError, OffscreenTarget};
-use crate::passes::beam::{render_beam, Segment};
-use crate::passes::bloom::{render_blur, render_bright_pass};
-use crate::passes::composite::render_composite;
-use crate::passes::julia::{render_julia_perturbed, JuliaNavState};
-use crate::passes::memory_field::{render_memory_field, MemoryFieldParams};
+use crate::passes::beam::{render_beam, render_beam_additive, Segment};
+use crate::passes::bloom::{render_blur, render_bright_pass, BloomChain};
+use crate::passes::composite::{render_composite, render_composite_hdr};
+use crate::passes::julia::{render_julia, render_julia_perturbed, JuliaNavState, DIRECT_ZOOM_MIN};
+use crate::passes::memory_field::{cur_gain, render_memory_field, MemoryFieldParams};
 use crate::passes::noise_texture::NoiseTexture;
+
+/// Which version of the pipeline a [`Renderer`] runs; see the module doc.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Look {
+    Before,
+    After,
+}
 
 /// Per-frame knobs a caller (a driven test, or eventually `hyst-audio`
 /// signals) sets; everything else about the pipeline's shape is fixed.
@@ -36,6 +47,8 @@ pub struct FrameParams {
     pub exposure: f32,
     pub beam_segments: Vec<Segment>,
     pub beam_color: [f32; 3],
+    /// In `After`, scaled by the field's `cur_gain` like the Julia input,
+    /// so a beam held still settles at the same ~7x whatever the decay.
     pub beam_intensity: f32,
 }
 
@@ -43,10 +56,12 @@ pub struct FrameParams {
 /// ping-pong pair persists between `render_frame` calls — that's the whole
 /// point of a feedback field).
 pub struct Renderer {
+    look: Look,
     width: u32,
     height: u32,
     aspect: f32,
     sampler: wgpu::Sampler,
+    noise_sampler: wgpu::Sampler,
     noise: NoiseTexture,
     julia_out: OffscreenTarget,
     field_a: OffscreenTarget,
@@ -56,31 +71,53 @@ pub struct Renderer {
     bright: OffscreenTarget,
     blur_h: OffscreenTarget,
     blur_v: OffscreenTarget,
+    bloom_chain: Option<BloomChain>,
     composited: OffscreenTarget,
     final_out: OffscreenTarget,
+    frame_index: u32,
 }
 
 impl Renderer {
-    /// `width`/`height` must keep `width * 4` a multiple of 256 (wgpu
-    /// readback alignment — see `OffscreenTarget::read_pixels`); any
-    /// multiple of 64 works.
+    /// The `Before` look. `width`/`height` must keep `width * 4` a multiple
+    /// of 256 (wgpu readback alignment — see `OffscreenTarget::read_pixels`);
+    /// any multiple of 64 works.
     pub fn new(ctx: &GpuContext, width: u32, height: u32) -> Self {
+        Self::with_look(ctx, width, height, Look::Before)
+    }
+
+    pub fn with_look(ctx: &GpuContext, width: u32, height: u32, look: Look) -> Self {
+        let (field, noise, noise_sampler) = match look {
+            Look::Before => (
+                OffscreenTarget::new as fn(&GpuContext, u32, u32) -> OffscreenTarget,
+                NoiseTexture::bake(ctx, 64, 64),
+                ctx.create_clamp_sampler(),
+            ),
+            Look::After => (
+                OffscreenTarget::new_hdr as fn(&GpuContext, u32, u32) -> OffscreenTarget,
+                NoiseTexture::bake_fbm(ctx, 128),
+                ctx.create_repeat_sampler(),
+            ),
+        };
         Self {
+            look,
             width,
             height,
             aspect: width as f32 / height as f32,
             sampler: ctx.create_clamp_sampler(),
-            noise: NoiseTexture::bake(ctx, 64, 64),
+            noise_sampler,
+            noise,
             julia_out: OffscreenTarget::new(ctx, width, height),
-            field_a: OffscreenTarget::new(ctx, width, height),
-            field_b: OffscreenTarget::new(ctx, width, height),
+            field_a: field(ctx, width, height),
+            field_b: field(ctx, width, height),
             field_is_a: true,
-            persistence_prev: OffscreenTarget::new(ctx, width, height),
-            bright: OffscreenTarget::new(ctx, width, height),
-            blur_h: OffscreenTarget::new(ctx, width, height),
-            blur_v: OffscreenTarget::new(ctx, width, height),
-            composited: OffscreenTarget::new(ctx, width, height),
+            persistence_prev: field(ctx, width, height),
+            bright: field(ctx, width, height),
+            blur_h: field(ctx, width, height),
+            blur_v: field(ctx, width, height),
+            bloom_chain: (look == Look::After).then(|| BloomChain::new(ctx, width, height)),
+            composited: field(ctx, width, height),
             final_out: OffscreenTarget::new(ctx, width, height),
+            frame_index: 0,
         }
     }
 
@@ -99,17 +136,16 @@ impl Renderer {
         ctx: &GpuContext,
         params: &FrameParams,
     ) -> Result<Vec<u8>, GpuError> {
-        // Always the perturbation path (Task 1): `render_julia` (direct
-        // f32 iteration) was previously the only one wired in here —
-        // `render_julia_perturbed` existed, was tested, but was genuinely
-        // dead code, which is the real root cause of "perturbation doesn't
-        // seem to work." Perturbation is mathematically identical to direct
-        // iteration at shallow zoom (`delta = full - Z_n` is an exact
-        // algebraic reformulation of the same recurrence, not an
-        // approximation), so it degrades gracefully rather than needing a
-        // depth-gated switch — see its own doc for the empirical depths
-        // where it stays sharp well past where direct iteration collapses.
-        render_julia_perturbed(ctx, &self.julia_out, &params.julia, self.aspect)?;
+        self.frame_index = self.frame_index.wrapping_add(1);
+        // Before: always the perturbation path. It is an exact algebraic
+        // reformulation of the same recurrence, but in float32 its escape
+        // test `Z_n + dz_n` speckles at shallow zoom, so After iterates
+        // directly wherever float32 still resolves the view.
+        if self.look == Look::After && params.julia.zoom >= DIRECT_ZOOM_MIN {
+            render_julia(ctx, &self.julia_out, &params.julia, self.aspect)?;
+        } else {
+            render_julia_perturbed(ctx, &self.julia_out, &params.julia, self.aspect)?;
+        }
 
         let (field_prev, field_dst) = if self.field_is_a {
             (&self.field_a, &self.field_b)
@@ -123,8 +159,21 @@ impl Renderer {
             field_prev,
             &self.noise,
             &self.sampler,
+            &self.noise_sampler,
             &params.memory_field,
         )?;
+        const HALF_WIDTH: f32 = 0.012;
+        if self.look == Look::After && !params.beam_segments.is_empty() {
+            render_beam_additive(
+                ctx,
+                field_dst,
+                &params.beam_segments,
+                params.beam_color,
+                params.beam_intensity * cur_gain(params.memory_field.decay),
+                self.aspect,
+                HALF_WIDTH,
+            )?;
+        }
         self.field_is_a = !self.field_is_a;
         let field_out = if self.field_is_a {
             &self.field_a
@@ -141,6 +190,21 @@ impl Renderer {
             params.persistence_decay,
         )?;
         copy_texture(ctx, &self.composited, &self.persistence_prev);
+
+        if let Some(chain) = &self.bloom_chain {
+            let bloom =
+                chain.render(ctx, &self.composited, &self.sampler, params.bloom_threshold)?;
+            render_composite_hdr(
+                ctx,
+                &self.final_out,
+                &self.composited,
+                bloom,
+                &self.sampler,
+                [params.bloom_strength, params.exposure],
+                self.frame_index,
+            )?;
+            return self.final_out.read_pixels(ctx);
+        }
 
         render_bright_pass(
             ctx,
@@ -177,7 +241,6 @@ impl Renderer {
             // geometry. See `render_beam_joints` in beam.rs — kept, tested,
             // just not called here; a real primitive for sharp corners
             // elsewhere, wrong tool for this smooth curve.
-            const HALF_WIDTH: f32 = 0.012;
             render_beam(
                 ctx,
                 &self.final_out,
@@ -276,5 +339,37 @@ mod tests {
             (m0 - m10).abs() > 0.1 || frame0 != frame10,
             "consecutive frames of a live feedback loop should differ"
         );
+    }
+
+    /// Same bar for the `After` look: HDR targets, mip bloom, the beam drawn
+    /// into the field and the hue-preserving tonemap still give a real,
+    /// changing frame at field-unit exposure.
+    #[test]
+    fn after_look_frame_loop_produces_changing_non_degenerate_output() {
+        let ctx = match GpuContext::new_blocking() {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+        let mut renderer = Renderer::with_look(&ctx, 128, 128, Look::After);
+        let after_params = |t: f32| FrameParams {
+            exposure: 0.25,
+            bloom_threshold: 4.0,
+            ..default_params(t)
+        };
+        let mut frames = Vec::new();
+        for i in 0..12 {
+            frames.push(
+                renderer
+                    .render_frame(&ctx, &after_params(i as f32 / 10.0))
+                    .unwrap(),
+            );
+        }
+        let mean = |p: &[u8]| p.iter().map(|&b| b as f64).sum::<f64>() / p.len() as f64;
+        let m_last = mean(&frames[11]);
+        assert!(
+            m_last > 1.0 && m_last < 250.0,
+            "frame should be non-degenerate, mean {m_last}"
+        );
+        assert_ne!(frames[10], frames[11], "consecutive frames should differ");
     }
 }

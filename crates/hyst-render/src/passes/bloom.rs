@@ -1,9 +1,8 @@
 //! Bloom — ported from `bloom-pass.ts` + `blur.frag.glsl`/
-//! `bright-pass.frag.glsl`. **Deviation from the original**: single-level
-//! (bright-pass -> blur H -> blur V), not the original's mip-chain
-//! downsample/upsample cascade — port-the-intent for R2's done-when (a
-//! driveable render loop that visibly blooms), not a 1:1 quality match; a
-//! multi-level cascade is a straightforward follow-up once this is wired.
+//! `bright-pass.frag.glsl`. Two shapes: the single full-resolution level
+//! (bright-pass -> blur H -> blur V) the "before" look uses, and
+//! [`BloomChain`], a small mip chain closer to the original's
+//! downsample/upsample cascade.
 
 use crate::gpu::{GpuContext, GpuError, OffscreenTarget};
 use crate::passes::{pack_slots, CommonUniforms};
@@ -91,6 +90,104 @@ void main() {
   result += texture(sampler2D(uTexTex, uTexSamp), vUv + o3).rgb * w3 + texture(sampler2D(uTexTex, uTexSamp), vUv - o3).rgb * w3;
   result += texture(sampler2D(uTexTex, uTexSamp), vUv + o4).rgb * w4 + texture(sampler2D(uTexTex, uTexSamp), vUv - o4).rgb * w4;
   fragColor = vec4(result, 1.0);
+}
+"#;
+
+/// Half-resolution bright pass followed by `LEVELS` successively halved
+/// blur levels, summed back up from the smallest. Wider and smoother than
+/// the single full-resolution 9-tap blur (whose radius is ~4 pixels at any
+/// output size), at a fraction of its fill cost.
+pub struct BloomChain {
+    bright: OffscreenTarget,
+    /// (horizontal scratch, blurred) per level, largest first.
+    levels: Vec<(OffscreenTarget, OffscreenTarget)>,
+    /// `up[k]` = `levels[k]` blurred + everything smaller, largest first.
+    up: Vec<OffscreenTarget>,
+}
+
+impl BloomChain {
+    const LEVELS: u32 = 4;
+
+    pub fn new(ctx: &GpuContext, width: u32, height: u32) -> Self {
+        let size = |k: u32| ((width >> k).max(1), (height >> k).max(1));
+        let (bw, bh) = size(1);
+        let levels = (1..=Self::LEVELS)
+            .map(|k| {
+                let (w, h) = size(k);
+                (
+                    OffscreenTarget::new_hdr(ctx, w, h),
+                    OffscreenTarget::new_hdr(ctx, w, h),
+                )
+            })
+            .collect();
+        let up = (1..Self::LEVELS)
+            .map(|k| {
+                let (w, h) = size(k);
+                OffscreenTarget::new_hdr(ctx, w, h)
+            })
+            .collect();
+        Self {
+            bright: OffscreenTarget::new_hdr(ctx, bw, bh),
+            levels,
+            up,
+        }
+    }
+
+    /// Returns the summed bloom (half resolution; `LEVELS` levels added at
+    /// equal weight, so it carries up to `LEVELS`x the bright-pass energy).
+    pub fn render(
+        &self,
+        ctx: &GpuContext,
+        scene: &OffscreenTarget,
+        sampler: &wgpu::Sampler,
+        threshold: f32,
+    ) -> Result<&OffscreenTarget, GpuError> {
+        render_bright_pass(ctx, &self.bright, scene, sampler, threshold)?;
+        let mut src = &self.bright;
+        for (h, v) in &self.levels {
+            render_blur(ctx, h, src, sampler, [1.0, 0.0])?;
+            render_blur(ctx, v, h, sampler, [0.0, 1.0])?;
+            src = v;
+        }
+        let mut acc = &self.levels[self.levels.len() - 1].1;
+        for (k, out) in self.up.iter().enumerate().rev() {
+            render_add(ctx, out, &self.levels[k].1, acc, sampler)?;
+            acc = out;
+        }
+        Ok(acc)
+    }
+}
+
+fn render_add(
+    ctx: &GpuContext,
+    output: &OffscreenTarget,
+    a: &OffscreenTarget,
+    b: &OffscreenTarget,
+    sampler: &wgpu::Sampler,
+) -> Result<(), GpuError> {
+    let common = CommonUniforms::new(0.0, [output.width() as f32, output.height() as f32]);
+    output.render_glsl_fragment_shader(
+        ctx,
+        ADD_GLSL,
+        common.bytes(),
+        None,
+        &[(a.view(), sampler), (b.view(), sampler)],
+    )
+}
+
+const ADD_GLSL: &str = r#"
+#version 450 core
+layout(location = 0) in vec2 vUv;
+layout(location = 0) out vec4 fragColor;
+layout(std140, set = 0, binding = 0) uniform Common { float TIME; float TIMEDELTA; vec2 RENDERSIZE; int PASSINDEX; int FRAMEINDEX; vec4 DATE; };
+layout(set = 0, binding = 2) uniform texture2D uATex;
+layout(set = 0, binding = 3) uniform sampler uASamp;
+layout(set = 0, binding = 4) uniform texture2D uBTex;
+layout(set = 0, binding = 5) uniform sampler uBSamp;
+void main() {
+  vec3 a = texture(sampler2D(uATex, uASamp), vUv).rgb;
+  vec3 b = texture(sampler2D(uBTex, uBSamp), vUv).rgb;
+  fragColor = vec4(a + b, 1.0);
 }
 "#;
 

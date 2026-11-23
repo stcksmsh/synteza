@@ -65,6 +65,20 @@ impl GpuContext {
         pollster::block_on(Self::new())
     }
 
+    /// Linear-filter, repeat sampler for textures baked to tile (the flow
+    /// noise), so advection reads anywhere on screen land on real noise
+    /// instead of a clamped edge texel.
+    pub fn create_repeat_sampler(&self) -> wgpu::Sampler {
+        self.device.create_sampler(&wgpu::SamplerDescriptor {
+            address_mode_u: wgpu::AddressMode::Repeat,
+            address_mode_v: wgpu::AddressMode::Repeat,
+            address_mode_w: wgpu::AddressMode::Repeat,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        })
+    }
+
     /// Linear-filter, clamp-to-edge sampler — the one sampler every render
     /// pass uses (matches the TS original's `fbo.ts` default: `CLAMP_TO_EDGE`
     /// so out-of-[0,1] advection reads in memory-field.frag.glsl don't wrap).
@@ -91,6 +105,7 @@ pub struct OffscreenTarget {
     view: wgpu::TextureView,
     width: u32,
     height: u32,
+    format: wgpu::TextureFormat,
 }
 
 const FULLSCREEN_VERTEX_WGSL: &str = r#"
@@ -112,6 +127,17 @@ impl OffscreenTarget {
     /// this module's own tests; a general offscreen target used by a real
     /// render pass later will need real padding-aware readback.
     pub fn new(ctx: &GpuContext, width: u32, height: u32) -> Self {
+        Self::with_format(ctx, width, height, wgpu::TextureFormat::Rgba8Unorm)
+    }
+
+    /// `Rgba16Float` targets hold the memory field's real range (its
+    /// steady state sits near 7x its input) without clipping at 1.0.
+    /// `read_pixels` only understands `Rgba8Unorm`.
+    pub fn new_hdr(ctx: &GpuContext, width: u32, height: u32) -> Self {
+        Self::with_format(ctx, width, height, wgpu::TextureFormat::Rgba16Float)
+    }
+
+    fn with_format(ctx: &GpuContext, width: u32, height: u32, format: wgpu::TextureFormat) -> Self {
         let texture = ctx.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("hyst-render offscreen target"),
             size: wgpu::Extent3d {
@@ -122,7 +148,7 @@ impl OffscreenTarget {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8Unorm,
+            format,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT
                 | wgpu::TextureUsages::COPY_SRC
                 | wgpu::TextureUsages::COPY_DST
@@ -135,6 +161,7 @@ impl OffscreenTarget {
             view,
             width,
             height,
+            format,
         }
     }
 
@@ -176,7 +203,7 @@ impl OffscreenTarget {
                     module: &shader,
                     entry_point: "fs_main",
                     targets: &[Some(wgpu::ColorTargetState {
-                        format: wgpu::TextureFormat::Rgba8Unorm,
+                        format: self.format,
                         blend: None,
                         write_mask: wgpu::ColorWrites::ALL,
                     })],
@@ -220,6 +247,12 @@ impl OffscreenTarget {
     /// bytes) — only correct when `width * 4` is already a multiple of 256;
     /// see the constructor's doc comment.
     pub fn read_pixels(&self, ctx: &GpuContext) -> Result<Vec<u8>, GpuError> {
+        if self.format != wgpu::TextureFormat::Rgba8Unorm {
+            return Err(GpuError::Readback(format!(
+                "read_pixels reads Rgba8Unorm targets only, this one is {:?}",
+                self.format
+            )));
+        }
         let bytes_per_row = self.width * 4;
         if !bytes_per_row.is_multiple_of(256) {
             return Err(GpuError::Readback(format!(
@@ -292,6 +325,10 @@ impl OffscreenTarget {
 
     pub fn texture(&self) -> &wgpu::Texture {
         &self.texture
+    }
+
+    pub fn format(&self) -> wgpu::TextureFormat {
+        self.format
     }
 
     /// Renders one frame of a real GLSL (`naga`-flavored, `#version 450
@@ -451,7 +488,7 @@ impl OffscreenTarget {
                     module: &fs_module,
                     entry_point: "main",
                     targets: &[Some(wgpu::ColorTargetState {
-                        format: wgpu::TextureFormat::Rgba8Unorm,
+                        format: self.format,
                         blend: None,
                         write_mask: wgpu::ColorWrites::ALL,
                     })],

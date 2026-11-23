@@ -14,14 +14,28 @@
 //! `JULIA_WIDTH`/`JULIA_HEIGHT` (default 1024x1024) set the output size; the
 //! width must be a multiple of 64 (the renderer's readback alignment).
 //! `JULIA_SECONDS` (default 90) sets the clip length.
+//!
+//! `JULIA_LOOK=before|after` (default `after`) picks the pipeline
+//! ([`hyst_render::renderer::Look`]), the Julia driver and the per-frame
+//! mapping, so both looks come from the same binary. `before` is the
+//! original look, unchanged.
+//!
+//! In `after`, memory-field decay follows the TS original's formula
+//! (`screen-composites.ts`): `max(0.86 + 0.105 * build, 0.86 + 0.125 *
+//! suspension) + 0.01 * sin(bar phase)`. `hyst-audio` has no build or
+//! break detectors yet, so both come from two energy envelopes: `build`
+//! rises while the ~2 s envelope sits above the ~20 s one (energy climbing
+//! toward a peak), `suspension` while it sits below (a break). At rest
+//! both are zero and decay is 0.86.
 
 use std::io::Write;
 use std::path::PathBuf;
 
 use hyst_audio::{FeatureExtractor, WavSource};
 use hyst_render::passes::beam::Segment;
-use hyst_render::passes::julia::JuliaDriver;
+use hyst_render::passes::julia::{CuratedJuliaDriver, JuliaDriver};
 use hyst_render::passes::memory_field::MemoryFieldParams;
+use hyst_render::renderer::Look;
 use hyst_render::{FrameParams, GpuContext, Renderer};
 
 const FPS: f32 = 30.0;
@@ -44,6 +58,12 @@ fn main() {
         "JULIA_WIDTH must be a positive multiple of 64 and JULIA_HEIGHT positive, got {width}x{height}"
     );
     assert!(duration_secs > 0.0, "JULIA_SECONDS must be positive");
+    let look = match std::env::var("JULIA_LOOK").as_deref() {
+        Ok("before") => Look::Before,
+        Ok("after") | Err(std::env::VarError::NotPresent) => Look::After,
+        Ok(other) => panic!("JULIA_LOOK must be before or after, got {other:?}"),
+        Err(e) => panic!("JULIA_LOOK: {e}"),
+    };
     let wav_path = std::env::args()
         .nth(1)
         .map(PathBuf::from)
@@ -90,7 +110,7 @@ fn main() {
     }
 
     let ctx = GpuContext::new_blocking().expect("no GPU adapter available — cannot render");
-    let mut renderer = Renderer::new(&ctx, width, height);
+    let mut renderer = Renderer::with_look(&ctx, width, height, look);
 
     let mut hop_count = 0usize;
     let mut frame_index = 0usize;
@@ -108,6 +128,8 @@ fn main() {
     // responded to the music at all (user feedback: "too static... doesn't
     // evolve or react to music").
     let mut julia_driver = JuliaDriver::new();
+    let mut curated_driver = CuratedJuliaDriver::new();
+    let mut structure = EnergyStructure::default();
 
     // Feed the whole track's samples through in HOP_SIZE-sized pushes so
     // `push_samples` yields exactly one SignalBus per hop, then render a
@@ -136,9 +158,19 @@ fn main() {
             // 44.1 kHz). Hops lag the true sample position by a constant ~3
             // hops (~35 ms) while the extractor's window first fills.
             if hop_count as f32 / hops_per_sec >= frame_index as f32 / FPS {
-                let julia = julia_driver.update(dt, &bus);
                 let aspect = width as f32 / height as f32;
-                let params = frame_params(&bus, t, beat_pulse, julia, chunk, aspect);
+                let params = match look {
+                    Look::Before => {
+                        let julia = julia_driver.update(dt, &bus);
+                        frame_params(&bus, t, beat_pulse, julia, chunk, aspect)
+                    }
+                    Look::After => {
+                        let julia = curated_driver.update(dt, &bus);
+                        structure.update(dt, bus.energy);
+                        let base = frame_params(&bus, t, beat_pulse, julia, chunk, aspect);
+                        after_frame_params(base, &bus, &structure)
+                    }
+                };
                 let pixels = renderer
                     .render_frame(&ctx, &params)
                     .expect("render_frame failed");
@@ -331,6 +363,54 @@ fn frame_params(
         beam_color: [1.0, 1.0, 1.0],
         beam_intensity: 0.5 + 2.0 * beat_pulse,
     }
+}
+
+/// Stand-in for the TS build and break detectors: two energy envelopes
+/// whose gap says whether energy is climbing (build) or has fallen away
+/// (suspension). Both are plain EMAs of a bounded value, not phases.
+#[derive(Default)]
+struct EnergyStructure {
+    mid: f32,
+    long: f32,
+}
+
+impl EnergyStructure {
+    fn update(&mut self, dt: f32, energy: f32) {
+        let e = energy.clamp(0.0, 1.0);
+        self.mid += (e - self.mid) * (dt / 2.0).min(1.0);
+        self.long += (e - self.long) * (dt / 20.0).min(1.0);
+    }
+
+    fn build(&self) -> f32 {
+        smoothstep(0.02, 0.12, self.mid - self.long)
+    }
+
+    fn suspension(&self) -> f32 {
+        smoothstep(0.05, 0.25, self.long - self.mid)
+    }
+}
+
+const AFTER_EXPOSURE: f32 = 0.12;
+const AFTER_BLOOM_THRESHOLD: f32 = 8.0;
+
+/// The `after` mapping over the `before` one. Decay is the TS formula over
+/// [`EnergyStructure`]; exposure and the bloom threshold are in field
+/// units, where a steadily lit pixel sits near `1 / (1 - 0.86)` (about 7)
+/// whatever the decay.
+fn after_frame_params(
+    mut params: FrameParams,
+    bus: &hyst_core::SignalBus,
+    structure: &EnergyStructure,
+) -> FrameParams {
+    let bar_wobble = (bus.bar_phase * std::f32::consts::TAU).sin() * 0.01;
+    let decay = ((0.86 + 0.105 * structure.build()).max(0.86 + 0.125 * structure.suspension())
+        + bar_wobble)
+        .clamp(0.0, 0.999);
+    params.memory_field.decay = decay;
+    params.bloom_threshold = AFTER_BLOOM_THRESHOLD;
+    params.bloom_strength = 0.15 + 0.25 * bus.energy;
+    params.exposure = AFTER_EXPOSURE;
+    params
 }
 
 fn write_ppm(path: &std::path::Path, rgba: &[u8], width: u32, height: u32) {
