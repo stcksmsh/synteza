@@ -17,8 +17,10 @@ reference (src/, tools/). Split from Hysteresis on 2026-11-22.
   §9 = first-30-days work orders WO-1..WO-14. Do not act on §8 decisions or merge the branch without the owner.
 
 ## Next            (ordered, pending owner OK)
-1. WO-4: fix two manual_is_multiple_of clippy errors in crates/hyst-render/src/passes/julia.rs, delete hyst-hw,
-   add Rust CI (fmt, clippy -D warnings, tests, render tests on lavapipe). Lint gate is red on master until fixed.
+1. WO-4 rest: delete hyst-hw, add Rust CI (fmt, clippy -D warnings, tests, render tests on lavapipe).
+   Clippy fix done in PR #17. Pre-existing on master: hyst-render test
+   passes::julia::tests::driver_keeps_the_boundary_framed_through_a_deep_dive fails (frame 399, escape spread 0);
+   fix or decide before render tests go into CI.
 2. WO-2 (parallel, read-only): inventory of everything afekt uses from synteza; feeds WO-3 (S0 move of
    hyst-compile/hyst-previz/hyst-cli to afekt, one coordinated change in both repos).
 3. WO-9 (test competitor "Infinite"), WO-10 (read third-party licence texts): need no decisions.

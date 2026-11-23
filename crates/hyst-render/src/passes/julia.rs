@@ -305,7 +305,7 @@ impl JuliaDriver {
         // occasionally (not every frame), then ease toward the found
         // boundary point with a step capped at a fraction of the view width
         // so it can never snap.
-        if self.frame % RESTEER_FRAMES == 0 {
+        if self.frame.is_multiple_of(RESTEER_FRAMES) {
             self.pan_target = steer_toward_boundary(self.pan, c, zoom);
         }
         let mut sx = (self.pan_target[0] - self.pan[0]) * PAN_EASE;
@@ -1571,7 +1571,7 @@ mod tests {
     fn jitter_bus(i: u32) -> hyst_core::SignalBus {
         // adversarial: energy/centroid/flatness slam between extremes every
         // frame — the worst case for any raw-audio-driven twitch.
-        let hi = i % 2 == 0;
+        let hi = i.is_multiple_of(2);
         hyst_core::SignalBus {
             energy: if hi { 0.95 } else { 0.02 },
             centroid: if hi { 0.9 } else { 0.1 },
