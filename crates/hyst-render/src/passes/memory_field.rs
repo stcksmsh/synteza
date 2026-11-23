@@ -17,6 +17,12 @@ use crate::passes::{pack_slots, CommonUniforms};
 /// which the look is "at rest" / unchanged from before `cur_gain` existed.
 const DECAY_REFERENCE: f32 = 0.86;
 
+/// Gain on the current frame's input so the field's steady state stays at
+/// `1 / (1 - DECAY_REFERENCE)` (about 7x) whatever the decay.
+pub fn cur_gain(decay: f32) -> f32 {
+    ((1.0 - decay) / (1.0 - DECAY_REFERENCE)).max(0.0)
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct MemoryFieldParams {
     pub decay: f32,
@@ -36,13 +42,14 @@ pub fn render_memory_field(
     prev: &OffscreenTarget,
     noise: &NoiseTexture,
     sampler: &wgpu::Sampler,
+    noise_sampler: &wgpu::Sampler,
     params: &MemoryFieldParams,
 ) -> Result<(), GpuError> {
     // Ported from memory-field-pass.ts: cur_gain is NOT an independent knob —
     // it's derived from decay so raising decay (to hold a build/break longer)
     // doesn't ALSO multiply steady-state brightness by the same factor (the
     // documented "washed-out mush" bug this formula exists to prevent).
-    let cur_gain = ((1.0 - params.decay) / (1.0 - DECAY_REFERENCE)).max(0.0);
+    let cur_gain = cur_gain(params.decay);
     let common = CommonUniforms::new(0.0, [output.width() as f32, output.height() as f32]);
     let slots = [
         [
@@ -68,7 +75,7 @@ pub fn render_memory_field(
         &[
             (current.view(), sampler),
             (prev.view(), sampler),
-            (&noise.view, sampler),
+            (&noise.view, noise_sampler),
         ],
     )
 }
@@ -202,7 +209,17 @@ void main() { fragColor = vec4(step(0.5, vUv.x), step(0.5, vUv.y), 0.5, 1.0); }
         let mut b = OffscreenTarget::new(&ctx, 64, 64);
         let frame0 = a.read_pixels(&ctx).unwrap();
         for _ in 0..100 {
-            render_memory_field(&ctx, &b, &current, &a, &noise, &sampler, &params(0.5)).unwrap();
+            render_memory_field(
+                &ctx,
+                &b,
+                &current,
+                &a,
+                &noise,
+                &sampler,
+                &sampler,
+                &params(0.5),
+            )
+            .unwrap();
             std::mem::swap(&mut a, &mut b);
         }
         let frame100 = a.read_pixels(&ctx).unwrap();
@@ -223,8 +240,17 @@ void main() { fragColor = vec4(step(0.5, vUv.x), step(0.5, vUv.y), 0.5, 1.0); }
             let mut a = OffscreenTarget::new(ctx, 64, 64);
             let mut b = OffscreenTarget::new(ctx, 64, 64);
             for _ in 0..10 {
-                render_memory_field(ctx, &b, &zero_current, &a, &noise, &sampler, &params(0.0))
-                    .unwrap();
+                render_memory_field(
+                    ctx,
+                    &b,
+                    &zero_current,
+                    &a,
+                    &noise,
+                    &sampler,
+                    &sampler,
+                    &params(0.0),
+                )
+                .unwrap();
                 std::mem::swap(&mut a, &mut b);
             }
             a.read_pixels(ctx).unwrap()
@@ -280,7 +306,7 @@ void main() { fragColor = vec4(vUv.x, vUv.y * 0.3, 1.0 - vUv.x, 1.0); }
             mirror_strength: 1.0,
         };
         for _ in 0..40 {
-            render_memory_field(&ctx, &b, &current, &a, &noise, &sampler, &p).unwrap();
+            render_memory_field(&ctx, &b, &current, &a, &noise, &sampler, &sampler, &p).unwrap();
             std::mem::swap(&mut a, &mut b);
         }
         let pixels = a.read_pixels(&ctx).unwrap();
