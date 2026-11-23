@@ -4,6 +4,7 @@
 pub mod beat;
 pub mod clock;
 pub mod delay_line;
+pub mod detectors;
 pub mod dsp;
 pub mod features;
 pub mod playback;

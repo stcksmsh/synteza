@@ -1,9 +1,6 @@
 //! Fullness / onset-density, ported from `src/audio/worklet/brain/activity.ts`.
-//! R1 scope note: ported as always-alive bus-signal producers only — the
-//! plan's R1 item doesn't name `DropDetector`/`BuildDetector`/`BreakDetector`
-//! (those own a *separate* fullness/onset-density instance in the TS
-//! original for exactly this reason: different cadence/lifecycle per
-//! consumer); this crate provides only the bus-level instance for now.
+//! Used twice, as in the TS original: once for the always-alive bus signals
+//! and once inside `DropDetector`, which owns its own instances.
 
 use super::envelope::EnvelopeFollower;
 
@@ -19,7 +16,6 @@ const ONSET_ACTIVITY_SCALE: f32 = 3.0;
 
 pub struct FullnessResult {
     pub fullness: f32,
-    #[allow(dead_code)] // mirrors the TS `slow` field; not yet consumed (no DropDetector port)
     pub slow: f32,
 }
 
@@ -54,8 +50,6 @@ impl FullnessTracker {
 
 pub struct OnsetDensityResult {
     pub rate: f32,
-    #[allow(dead_code)]
-    // mirrors the TS `jump` field; DropDetector's own consumer isn't ported yet
     pub jump: f32,
 }
 
