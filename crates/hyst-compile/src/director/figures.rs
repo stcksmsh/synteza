@@ -3159,6 +3159,13 @@ mod tests {
         for line in serde_json::to_string_pretty(&v).unwrap().lines().enumerate() {
             println!("DIAG {:07} {}", line.0, line.1.trim());
         }
+        let cpu = std::fs::read_to_string("/proc/cpuinfo").unwrap();
+        for l in cpu.lines().filter(|l| l.starts_with("model name") || l.starts_with("flags")).take(2) {
+            println!("DIAGCPU {l}");
+        }
+        let ldd = std::process::Command::new("ldd").arg("--version").output().unwrap();
+        println!("DIAGLIBC {}", String::from_utf8_lossy(&ldd.stdout).lines().next().unwrap());
+        panic!("diagnostic");
     }
 
     /// Whole-score digests, recorded before the workspace refactor. A change
