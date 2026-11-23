@@ -3150,6 +3150,17 @@ mod tests {
             .collect()
     }
 
+    #[test]
+    fn diag_dump_ring() {
+        let rig = Rig::illustrative_five_axis();
+        let steady = super::super::tests::fixture(0.7, 0.7);
+        let s = compile_ensemble(&steady, CompileConfig::default(), rig, &[], &ring(), 0.1).unwrap();
+        let v = serde_json::to_value(&s).unwrap();
+        for line in serde_json::to_string_pretty(&v).unwrap().lines().enumerate() {
+            println!("DIAG {:07} {}", line.0, line.1.trim());
+        }
+    }
+
     /// Whole-score digests, recorded before the workspace refactor. A change
     /// here means the dance changed; never update a constant to make it pass.
     #[test]
