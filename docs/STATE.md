@@ -14,14 +14,20 @@ VARIED hysts"; current scenes to be rethought; Mandelbulb dive dropped. Frozen T
 - #33 WO-13 TS build/drop/break detectors in hyst-audio; on real audio drops never fire, break sticks (as in TS).
 
 ## In flight
-- Sketch round, branch claude/sketch-scenes, builder (opus): three rough non-fractal scenes in the existing
-  renderer (grid, growth = reaction-diffusion, feedback = video-synth) + a section switcher with ~4 s
-  cross-dissolve; SCENE=grid|growth|feedback|auto. Clips on panicspiral and afterimage go to
-  /secondary/hyst-data/synteza/sketch1/ (<28 MiB each); check them, then send to the owner as files.
+- No agent running.
+- PR #39 (draft, CI green, NOT yet reviewed, not merged), branch claude/sketch-scenes: three rough non-fractal
+  scenes (grid, growth = Gray-Scott, feedback = video-synth) + section switcher with 4 s cross-dissolve;
+  SCENE=grid|growth|feedback|auto with SCENE_SIDECAR; frames piped to ffmpeg (no raw frames on disk).
+  Eight clips sent to the owner as files on 2026-11-24 from /secondary/hyst-data/synteza/sketch1/
+  (auto-afterimage, auto-panicspiral, and grid/growth/feedback on each track). AWAITING his verdict:
+  (1) does switching scenes with the song work, (2) keep/change/drop per scene, (3) what is missing.
+  Known: in auto, feedback takes most of the time (loud "Other" sections map to it); beat-locked motion may be off
+  (sidecars report tempo 119.68, likely a fallback grid).
+  When he answers: run a nonslop:reviewer on #39, then merge it as a sketch base or park it, as the verdict says.
 - PR #35 (song-aware Julia) is parked as a draft; the owner rejected it. Do not merge it as a look.
-- Product research runs in a separate chat between the owner and a web agent, from the package
-  /secondary/hyst-data/synteza/brief/synteza-brief.zip (BRIEF.md inside). Its output (product definition, show
-  model, scene library, first work orders) comes back through the owner and replaces docs/PLAN.md where they differ.
+- Product research runs in a separate chat between the owner and a web agent, from
+  /secondary/hyst-data/synteza/brief/synteza-brief.zip (BRIEF.md inside; already sent to him). The owner will bring
+  its plan to the next coordinator.
 
 ## Direction (owner, 2026-11-24)
 - The Julia line is stopped: every form rejected ("too simple for music", "one-dimensional"). No version ever
@@ -36,13 +42,14 @@ VARIED hysts"; current scenes to be rethought; Mandelbulb dive dropped. Frozen T
   404.zero, Bicep CHROMA, Weirdcore, FlyLo Layer 3; disliked: Ikeda strobing).
 
 ## Next
-1. Send the sketch clips; get the owner's verdict per scene and on the switching.
-2. Take in the research chat's plan when the owner brings it; slice from it.
-3. Independent bugs: hyst-audio BeatTracker reads 119.68 BPM on every track (beat.rs:50, :114-115, :124); live
-   drop/break detectors do not fire on real audio.
+1. Take in the web agent's plan when the owner brings it: save it as docs/PLAN.md (replacing the old proposal
+   where they differ), then slice work orders from it. Each slice ends in a clip the owner judges.
+2. The owner's verdict on the sketch clips (above) feeds the same plan.
+3. Independent bugs: hyst-audio BeatTracker reads 119.68 BPM on every track (beat.rs:50, :114-115, :124); offline
+   sidecar tempo looks like a fallback too; live drop/break detectors do not fire on real audio.
 
 ## Waiting on owner
-- Verdict on the sketch clips (once sent). The research chat's result.
+- Sketch verdict; the web agent's plan.
 
 ## Hard-won facts
 - Owner allows the coordinator to `gh pr merge`; the nonslop hook first needs `nonslop slice verify <branch>`,
