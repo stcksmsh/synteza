@@ -274,8 +274,16 @@ def lanes(root, tmap):
     return out
 
 
+def renders_whole_project(root):
+    """True when the render bounds are the entire project, so the wav starts at project 0 (or later, when the
+    render trimmed leading silence)."""
+    rr = root.first('RENDER_RANGE')
+    return rr is not None and len(rr) > 1 and rr[1] == '1'
+
+
 def read(path):
+    """(tempo map, markers, lanes, whether the render covers the entire project)."""
     with open(path, encoding='utf-8', errors='replace') as f:
         root = parse(f.read())
     tmap = tempo_map(root)
-    return tmap, markers(root), lanes(root, tmap)
+    return tmap, markers(root), lanes(root, tmap), renders_whole_project(root)

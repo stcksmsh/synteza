@@ -73,12 +73,16 @@ python3 scripts/rpp.py ~/Music/Singles/Published/<name>/<name>.RPP base.sidecar.
   a point marker has `start == end`) to the base sidecar, and replaces `beats` and `tempo` with the project grid.
   No other key changes. Same inputs give a byte-identical file.
 - All times are wav seconds. The offset between project and wav is measured (`rpp/offset.py`): the first event
-  against the wav's first audible sample, then every lane's events against the wav's onsets within 60 ms of that,
-  then a per-event match for the residual. It prints offset, residual, peak ratio and each lane's own offset, and
-  exits 2 when the peak is ambiguous or the residual is over 20 ms. The offset applied is rounded to whole ms.
+  against the wav's first audible sample (the anchor), then every lane's events against the wav's onsets over
+  ±4 s of the anchor, cut to 0..first event when the project renders the entire project. A decisive peak there
+  wins; otherwise the peak within 60 ms of the anchor, but only when it agrees or the wav starts sharply (from
+  silence to -40 dBFS within 10 ms). Then a per-event match for the residual. It prints offset, residual, which
+  search decided, peak ratio and each lane's own offset, and exits 2 when the offset is ambiguous or the residual
+  is over 20 ms. The offset applied is rounded to whole ms.
 - Followed: square tempo points and time-signature changes in `TEMPOENVEX`, looped MIDI items, `SOFFS`,
   item play rate, `IGNTEMPO`, folder mutes. Left out: muted tracks and items, tracks without events, events
   outside the wav. A track recorded as audio becomes an `items` lane of item starts.
+- Solo is ignored: only mute is read, so a project saved with a track soloed still yields every unmuted track.
 - Refused with a message: tempo ramps, project play rate other than 1, play-speed envelopes, items with several
   takes, a track with both MIDI and audio items.
 - Check clip: `scripts/rpp/checkclip.py out.sidecar.json track.wav clip.mp4` draws 60 s from the first drum
