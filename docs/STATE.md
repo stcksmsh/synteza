@@ -14,29 +14,35 @@ VARIED hysts"; current scenes to be rethought; Mandelbulb dive dropped. Frozen T
 - #33 WO-13 TS build/drop/break detectors in hyst-audio; on real audio drops never fire, break sticks (as in TS).
 
 ## In flight
-- Nothing running. PR #35 (song-aware Julia) is parked as a draft: the owner rejected it. Do not merge it as a
-  look. It holds reusable tooling (JULIA_FREEZE, JULIA_CRF, raw-frame cleanup) to salvage later.
+- Sketch round, branch claude/sketch-scenes, builder (opus): three rough non-fractal scenes in the existing
+  renderer (grid, growth = reaction-diffusion, feedback = video-synth) + a section switcher with ~4 s
+  cross-dissolve; SCENE=grid|growth|feedback|auto. Clips on panicspiral and afterimage go to
+  /secondary/hyst-data/synteza/sketch1/ (<28 MiB each); check them, then send to the owner as files.
+- PR #35 (song-aware Julia) is parked as a draft; the owner rejected it. Do not merge it as a look.
+- Product research runs in a separate chat between the owner and a web agent, from the package
+  /secondary/hyst-data/synteza/brief/synteza-brief.zip (BRIEF.md inside). Its output (product definition, show
+  model, scene library, first work orders) comes back through the owner and replaces docs/PLAN.md where they differ.
 
-## Owner verdict 2026-11-24 (stops the Julia line)
-- Flick grid: "all are bad"; only frozen pan is calm "but it's ugly".
-- Blind pairs: afterimage and event_horizon, song-aware on and off: "both shit" on both songs.
-- "it might be the julia in general ... it's also too simple for music, we'd probably need patch switching or smth
-  more"; "the julia might work for some songs and some sections but not for others, we need to rethink the ENTIRE
-  project basically I think".
-- So: no more Julia tuning. No engine work (S1, WO-11) until the direction is re-decided with the owner.
+## Direction (owner, 2026-11-24)
+- The Julia line is stopped: every form rejected ("too simple for music", "one-dimensional"). No version ever
+  looked good to him.
+- Goal: one system for both mass-appeal rave/techno shows (screen + lasers, lighting, smoke) and smaller abstract
+  art-scene shows. Variety across a song and seamless, music-following switching matter most.
+- Automatic first (music drives the show); per-song authoring and live performance later as layers on the same
+  cue stream. First uses: videos for his tracks, then an installation, and the visual half of kabl v2 (developed
+  in parallel). Generative first, footage later. Lights/lasers: simulation and preview only (he owns no gear).
+- afekt (the arm) is wholly separate.
+- His ratings of 12 reference visuals are in BRIEF.md (liked: Alva Noto grids, Max Cooper emergent growth,
+  404.zero, Bicep CHROMA, Weirdcore, FlyLo Layer 3; disliked: Ikeda strobing).
 
 ## Next
-1. Re-decide the direction with the owner (questions asked 2026-11-24: reference visuals he likes; whether any
-   earlier version ever looked right; several different scenes switched per section vs something else; whether
-   the rethink covers the product or only the visuals).
-2. Only then slice. Taste is judged on clips of his tracks sent as files, never argued in text.
-3. Independent of direction: hyst-audio BeatTracker reads 119.68 BPM on all owner tracks (locked near its 120
-   prior; beat.rs:50, :114-115, :124); live drop/break detectors do not work on real audio.
+1. Send the sketch clips; get the owner's verdict per scene and on the switching.
+2. Take in the research chat's plan when the owner brings it; slice from it.
+3. Independent bugs: hyst-audio BeatTracker reads 119.68 BPM on every track (beat.rs:50, :114-115, :124); live
+   drop/break detectors do not fire on real audio.
 
 ## Waiting on owner
-- The direction questions above.
-- PLAN §8.3 open: 1.0 platforms, library shape, fate of hyst-choreo/hyst-script/hyst-output, TS Pages demo,
-  business model.
+- Verdict on the sketch clips (once sent). The research chat's result.
 
 ## Hard-won facts
 - Owner allows the coordinator to `gh pr merge`; the nonslop hook first needs `nonslop slice verify <branch>`,
