@@ -14,33 +14,27 @@ VARIED hysts"; current scenes to be rethought; Mandelbulb dive dropped. Frozen T
 - #33 WO-13 TS build/drop/break detectors in hyst-audio; on real audio drops never fire, break sticks (as in TS).
 
 ## In flight
-- PR #35 (draft, CI green, review MINOR, not merged): song-aware Julia, JULIA_SONG=on|off (off byte-identical),
-  per-song calm (raw RMS dB / range / onset rate), sidecar sections with eased sub-looks, JULIA_FREEZE=<element>,
-  JULIA_CRF, raw frames deleted after encode. Builder done; no agent running.
-  WAITING on owner's verdict, files already sent to him:
-  - flick grid /secondary/hyst-data/synteza/flicks/flicks_grid.mp4 (12 tiles: baseline + one element frozen each:
-    jitter beat beam_size c_jumps bloom fold flow wobble palette drive pan). He names the flick culprit.
-  - blind pairs (sent copies in song1/small/): afterimage y2 vs y3; event_horizon y1 vs y4.
-    Key: /secondary/hyst-data/synteza/song1-key.txt (y1=event_horizon off, y2=afterimage on, y3=afterimage off,
-    y4=event_horizon on). Never show the key before he answers.
-  After the verdict: send the review minors to a builder (fold flag dead for calm 0.18-0.5 since punch_energy <=
-  react; tempo term constant because of the beat-tracker bug; owner_tracks_calm_ordering is a brittle fit lock),
-  plus whatever the verdict asks, then `nonslop slice verify` / `slice review`, merge.
+- Nothing running. PR #35 (song-aware Julia) is parked as a draft: the owner rejected it. Do not merge it as a
+  look. It holds reusable tooling (JULIA_FREEZE, JULIA_CRF, raw-frame cleanup) to salvage later.
 
-## Next            (after #35)
-1. Bug: hyst-audio BeatTracker reads 119.68 BPM on all owner tracks: it stays locked near its 120 prior
-   (beat.rs:50 start, :114-115 octave bias, :124 integer lags). Diagnose against the sidecar tempo.
-2. Whole-song variety beyond one fractal: the PLAN §4.2 library (owner: the whole song must not be
-   one-dimensional). WO-11 engine design note (docs/ENGINE.md) before new scenes.
-3. Julia repair rows 6-8 (colour/OKLab, relief lighting, AA) as the owner's critique points.
-4. Follow-ups: stale AGENTS.md section refs (docs/PLAN.md:44, crates/hyst-choreo/README.md, docs/osc.md,
-   SINTEZA_OFFLINE_SSM.md); stale module doc in crates/hyst-render/src/lib.rs; julia re-acquire on smooth deep zoom.
-5. WO-9 (competitor "Infinite"), WO-12 (OKLCH palettes), live detector tuning.
+## Owner verdict 2026-11-24 (stops the Julia line)
+- Flick grid: "all are bad"; only frozen pan is calm "but it's ugly".
+- Blind pairs: afterimage and event_horizon, song-aware on and off: "both shit" on both songs.
+- "it might be the julia in general ... it's also too simple for music, we'd probably need patch switching or smth
+  more"; "the julia might work for some songs and some sections but not for others, we need to rethink the ENTIRE
+  project basically I think".
+- So: no more Julia tuning. No engine work (S1, WO-11) until the direction is re-decided with the owner.
+
+## Next
+1. Re-decide the direction with the owner (questions asked 2026-11-24: reference visuals he likes; whether any
+   earlier version ever looked right; several different scenes switched per section vs something else; whether
+   the rethink covers the product or only the visuals).
+2. Only then slice. Taste is judged on clips of his tracks sent as files, never argued in text.
+3. Independent of direction: hyst-audio BeatTracker reads 119.68 BPM on all owner tracks (locked near its 120
+   prior; beat.rs:50, :114-115, :124); live drop/break detectors do not work on real audio.
 
 ## Waiting on owner
-- The #35 verdict above.
-- Disk: ~24 GB of raw frames in /secondary/hyst-data/synteza/owner1/{event_horizon,panicspiral,afterimage}/
-  (agent rm -rf was denied; he runs it himself).
+- The direction questions above.
 - PLAN §8.3 open: 1.0 platforms, library shape, fate of hyst-choreo/hyst-script/hyst-output, TS Pages demo,
   business model.
 
