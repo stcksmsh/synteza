@@ -60,6 +60,31 @@ same JSON:
 - To switch `song.sh`: replace `npx tsx scripts/analyze.ts "$wav" "$D/$slug.sidecar.json"` by
   `/secondary/hyst-env/analyze-py/bin/python scripts/analyze.py "$wav" "$D/$slug.sidecar.json"`.
 
+## Exact grid and lanes from a Reaper project (`rpp.py`, package `rpp/`)
+
+When the track's Reaper project exists, the beat grid and note times need not be estimated:
+
+```
+python3 scripts/rpp.py ~/Music/Singles/Published/<name>/<name>.RPP base.sidecar.json out.sidecar.json [--wav W]
+```
+
+- Reads the project text only (never opens or writes it). Adds `source: "daw"`, `downbeats`, `lanes[]`
+  (`{name, kind: "midi" | "items", events[{t, pitch, velocity, length}]}`) and `markers[]` (`{name, start, end}`;
+  a point marker has `start == end`) to the base sidecar, and replaces `beats` and `tempo` with the project grid.
+  No other key changes. Same inputs give a byte-identical file.
+- All times are wav seconds. The offset between project and wav is measured (`rpp/offset.py`): the first event
+  against the wav's first audible sample, then every lane's events against the wav's onsets within 60 ms of that,
+  then a per-event match for the residual. It prints offset, residual, peak ratio and each lane's own offset, and
+  exits 2 when the peak is ambiguous or the residual is over 20 ms. The offset applied is rounded to whole ms.
+- Followed: square tempo points and time-signature changes in `TEMPOENVEX`, looped MIDI items, `SOFFS`,
+  item play rate, `IGNTEMPO`, folder mutes. Left out: muted tracks and items, tracks without events, events
+  outside the wav. A track recorded as audio becomes an `items` lane of item starts.
+- Refused with a message: tempo ramps, project play rate other than 1, play-speed envelopes, items with several
+  takes, a track with both MIDI and audio items.
+- Check clip: `scripts/rpp/checkclip.py out.sidecar.json track.wav clip.mp4` draws 60 s from the first drum
+  downbeat: a full-frame flash per beat (orange on downbeats), one labelled row per lane, the audio muxed in.
+- Tests: `/secondary/hyst-env/analyze-py/bin/python -m pytest scripts/rpp -q` (synthetic project and click tracks).
+
 ## Schema 4 — what it adds and why
 
 Per `SINTEZA_OFFLINE_SSM.md` §1.5, the one thing nothing else in the pipeline produces: **the
