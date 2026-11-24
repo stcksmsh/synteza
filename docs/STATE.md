@@ -37,9 +37,8 @@ VARIED hysts"; current scenes to be rethought; Mandelbulb dive dropped. Frozen T
 - Automatic first (music drives the show); per-song authoring and live performance later as layers on the same
   cue stream. First uses: videos for his tracks, then an installation, and the visual half of kabl v2 (developed
   in parallel). Generative first, footage later. Lights/lasers: simulation and preview only (he owns no gear).
-- afekt (the arm) is wholly separate.
-- His ratings of 12 reference visuals are in BRIEF.md (liked: Alva Noto grids, Max Cooper emergent growth,
-  404.zero, Bicep CHROMA, Weirdcore, FlyLo Layer 3; disliked: Ikeda strobing).
+- afekt (the arm) is wholly separate; it uses synteza only via SYNTEZA_DIR (scripts/analyze*, hyst-audio beat_pll).
+- His ratings of 12 reference visuals: BRIEF.md in the brief package.
 
 ## Next
 1. Take in the web agent's plan when the owner brings it: save it as docs/PLAN.md (replacing the old proposal
@@ -47,9 +46,6 @@ VARIED hysts"; current scenes to be rethought; Mandelbulb dive dropped. Frozen T
 2. The owner's verdict on the sketch clips (above) feeds the same plan.
 3. Independent bugs: hyst-audio BeatTracker reads 119.68 BPM on every track (beat.rs:50, :114-115, :124); offline
    sidecar tempo looks like a fallback too; live drop/break detectors do not fire on real audio.
-
-## Waiting on owner
-- Sketch verdict; the web agent's plan.
 
 ## Hard-won facts
 - Owner allows the coordinator to `gh pr merge`; the nonslop hook first needs `nonslop slice verify <branch>`,
@@ -61,5 +57,4 @@ VARIED hysts"; current scenes to be rethought; Mandelbulb dive dropped. Frozen T
 - `gh pr edit` fails (Projects classic); use `gh api -X PATCH repos/stcksmsh/<repo>/pulls/<n>`.
 - Render example: width % 64 == 0; JULIA_WIDTH/HEIGHT/SECONDS/OUT_DIR/LOOK/SONG/SIDECAR/FREEZE/CRF; writes a
   video-only mp4, mux audio with ffmpeg. Renders under systemd-run --user, data in /secondary/hyst-data.
-- afekt uses synteza only via SYNTEZA_DIR: scripts/analyze* and the hyst-audio beat_pll example.
 - Frozen src/ and tools/ are read-only. ONE arm. Commit messages are plain, no attribution lines.
