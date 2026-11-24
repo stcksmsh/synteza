@@ -12,6 +12,7 @@ pub mod hyst_format;
 pub mod isf_translate;
 pub mod passes;
 pub mod renderer;
+pub mod scenes;
 
 pub use gpu::{GpuContext, GpuError, OffscreenTarget};
 pub use hyst_format::{parse_hyst, IsfDocument, IsfInput, IsfParseError, IsfPass};

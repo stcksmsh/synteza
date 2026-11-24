@@ -27,6 +27,9 @@
 //! rises while the ~2 s envelope sits above the ~20 s one (energy climbing
 //! toward a peak), `suspension` while it sits below (a break). At rest
 //! both are zero and decay is 0.86.
+//!
+//! `SCENE=grid|growth|feedback|auto` renders the non-fractal sketch scenes
+//! instead (see `run_scenes`); with `SCENE` unset nothing above changes.
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -50,6 +53,10 @@ fn env_or<T: std::str::FromStr>(name: &str, default: T) -> T {
 }
 
 fn main() {
+    if let Ok(scene) = std::env::var("SCENE") {
+        run_scenes(&scene);
+        return;
+    }
     let width: u32 = env_or("JULIA_WIDTH", 1024);
     let height: u32 = env_or("JULIA_HEIGHT", 1024);
     let duration_secs: f32 = env_or("JULIA_SECONDS", 90.0);
@@ -217,6 +224,131 @@ fn main() {
             out_dir.display()
         );
     }
+}
+
+/// `SCENE=grid|growth|feedback|auto`: the sketch scenes instead of Julia.
+/// Everything musical comes from the offline sidecar (`SCENE_SIDECAR`,
+/// required), whose beats, downbeats, envelopes and onsets drive the scenes;
+/// `auto` plays the switcher over the sidecar's sections. Frames sit on the
+/// track's clock (`SCENE_START + i / FPS`) and are piped straight to ffmpeg,
+/// which muxes the same span of the WAV, so no frames land on disk.
+///
+/// `SCENE_START` (s, default 0), `SCENE_SECONDS` (default: to the end),
+/// `SCENE_WIDTH`/`SCENE_HEIGHT` (default 960x540), `SCENE_CRF` (default 16),
+/// `SCENE_OUT` (default `test-output/scene_<scene>.mp4`).
+fn run_scenes(scene: &str) {
+    use hyst_render::scenes::{switcher, SceneKind, SceneRenderer, SongTrack};
+
+    let fixed = match scene {
+        "auto" => None,
+        name => Some(SceneKind::from_name(name).unwrap_or_else(|| {
+            panic!("SCENE must be grid, growth, feedback or auto, got {name:?}")
+        })),
+    };
+    let wav_path = std::env::args()
+        .nth(1)
+        .map(PathBuf::from)
+        .expect("SCENE mode needs the WAV path as the first argument");
+    let sidecar_path = std::env::var("SCENE_SIDECAR").expect("SCENE mode needs SCENE_SIDECAR");
+    let json = std::fs::read_to_string(&sidecar_path)
+        .unwrap_or_else(|e| panic!("read {sidecar_path}: {e}"));
+    let sidecar = hyst_core::Sidecar::from_json_str(&json)
+        .unwrap_or_else(|e| panic!("parse {sidecar_path}: {e}"));
+    let width: u32 = env_or("SCENE_WIDTH", 960);
+    let height: u32 = env_or("SCENE_HEIGHT", 540);
+    assert!(
+        width > 0 && height > 0 && width.is_multiple_of(64),
+        "SCENE_WIDTH must be a positive multiple of 64 and SCENE_HEIGHT positive, got {width}x{height}"
+    );
+    let start: f32 = env_or("SCENE_START", 0.0);
+    let duration = sidecar.duration as f32;
+    let seconds: f32 = env_or("SCENE_SECONDS", duration - start);
+    assert!(
+        start >= 0.0 && seconds > 0.0 && start + seconds <= duration + 0.5,
+        "SCENE_START {start} + SCENE_SECONDS {seconds} must lie inside the track ({duration} s)"
+    );
+    let crf: u32 = env_or("SCENE_CRF", 16);
+    let out = std::env::var_os("SCENE_OUT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("test-output")
+                .join(format!("scene_{scene}.mp4"))
+        });
+    if let Some(dir) = out.parent() {
+        std::fs::create_dir_all(dir).expect("create output dir");
+    }
+
+    let sections = switcher::sections_from_sidecar(&sidecar);
+    if fixed.is_none() {
+        println!("section -> scene");
+        for (i, s) in sections.iter().enumerate() {
+            println!(
+                "  {i:2}  {:6.1}-{:6.1}  {:?}  level {:.2}  {}{}",
+                s.start,
+                s.end,
+                s.kind,
+                s.level,
+                s.scene.name(),
+                s.repeats
+                    .map(|j| format!("  (repeats {j})"))
+                    .unwrap_or_default()
+            );
+        }
+    }
+
+    let mut ffmpeg = std::process::Command::new("ffmpeg")
+        .args(["-y", "-v", "error", "-f", "rawvideo", "-pix_fmt", "rgba"])
+        .args(["-s", &format!("{width}x{height}"), "-r", &FPS.to_string()])
+        .args([
+            "-i",
+            "-",
+            "-ss",
+            &start.to_string(),
+            "-t",
+            &seconds.to_string(),
+        ])
+        .arg("-i")
+        .arg(&wav_path)
+        .args([
+            "-map", "0:v", "-map", "1:a", "-c:v", "libx264", "-preset", "medium",
+        ])
+        .args(["-crf", &crf.to_string(), "-pix_fmt", "yuv420p"])
+        .args(["-c:a", "aac", "-b:a", "160k", "-shortest"])
+        .arg(&out)
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .expect("failed to spawn ffmpeg");
+    let mut pipe = ffmpeg.stdin.take().expect("ffmpeg stdin");
+
+    let ctx = GpuContext::new_blocking().expect("no GPU adapter available — cannot render");
+    let mut renderer = SceneRenderer::new(&ctx, width, height);
+    let mut song = SongTrack::new(&sidecar);
+    let dt = 1.0 / FPS;
+    let frames = (seconds * FPS).round() as usize;
+    for i in 0..frames {
+        let t = start + i as f32 * dt;
+        let inputs = song.advance(t, dt);
+        let weights = match fixed {
+            Some(kind) => {
+                let mut w = [0.0; 3];
+                w[kind as usize] = 1.0;
+                w
+            }
+            None => switcher::weights_at(&sections, t),
+        };
+        let pixels = renderer
+            .render(&ctx, &inputs, weights)
+            .expect("scene render failed");
+        pipe.write_all(&pixels).expect("write frame to ffmpeg");
+        if i % 300 == 0 {
+            println!("frame {i}/{frames} (t {t:.1} s)");
+        }
+    }
+    drop(pipe);
+    let status = ffmpeg.wait().expect("wait for ffmpeg");
+    assert!(status.success(), "ffmpeg exited with {status}");
+    println!("encoded {frames} frames to {}", out.display());
 }
 
 fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
