@@ -2,10 +2,13 @@
 """A check clip for a DAW sidecar: the track's audio under a full-frame flash on every beat (another colour on
 downbeats) and one labelled row per lane whose tick lights at each of the lane's events.
 
-checkclip.py sidecar.json track.wav out.mp4 [--start S] [--seconds 60] [--drums REGEX]
+checkclip.py sidecar.json track.wav out.mp4 [--start S] [--seconds 60] [--drums REGEX] [--lead-ms 0]
 
 The window starts at --start, or by default at the downbeat at or before the first event of a lane whose name
-matches --drums. Frames are drawn with numpy and piped to ffmpeg, which adds the labels and the audio.
+matches --drums. Frame k shows wav time start + k/FPS, so an event first lights the frame ceil((t - start) * FPS),
+at full brightness for FLASH_S. --lead-ms draws every flash and tick that much earlier, rounded to whole frames
+so every flash moves by the same number of frames; the audio is untouched.
+Frames are drawn with numpy and piped to ffmpeg, which adds the labels and the audio.
 """
 import argparse
 import bisect
@@ -35,6 +38,18 @@ def lit(times, frame_times):
     return ok & (frame_times - t[np.clip(i, 0, None)] < FLASH_S) if len(t) else np.zeros(len(frame_times), bool)
 
 
+def lead_frames(lead_ms):
+    return round(lead_ms * FPS / 1000)
+
+
+def states(side, start, n, lead_ms=0.0):
+    """Per frame: downbeat flash, beat flash, and one tick row per lane, drawn lead_ms (in whole frames) early."""
+    ft = start + (np.arange(n) + lead_frames(lead_ms)) / FPS
+    downbeat = lit(side['downbeats'], ft)
+    beat = lit(side['beats'], ft) & ~downbeat
+    return downbeat, beat, [lit([e['t'] for e in lane['events']], ft) for lane in side['lanes']]
+
+
 def default_start(side, drums):
     firsts = [lane['events'][0]['t'] for lane in side['lanes'] if re.search(drums, lane['name'])]
     if not firsts:
@@ -51,6 +66,7 @@ def main(argv):
     ap.add_argument('--start', type=float)
     ap.add_argument('--seconds', type=float, default=60.0)
     ap.add_argument('--drums', default='(?i)kick|clap|hat|perc|snare')
+    ap.add_argument('--lead-ms', type=float, default=0.0)
     a = ap.parse_args(argv)
     side = json.loads(Path(a.sidecar).read_text(encoding='utf-8'))
     try:
@@ -59,11 +75,8 @@ def main(argv):
         print(f'error: {e}', file=sys.stderr)
         return 1
     n = round(a.seconds * FPS)
-    ft = start + np.arange(n) / FPS
-    downbeat = lit(side['downbeats'], ft)
-    beat = lit(side['beats'], ft) & ~downbeat
+    downbeat, beat, rows = states(side, start, n, a.lead_ms)
     lanes = side['lanes']
-    rows = [lit([e['t'] for e in lane['events']], ft) for lane in lanes]
     top = H - 20 - ROW_H * len(lanes)
     if top < 20:
         print(f'error: {len(lanes)} lanes do not fit', file=sys.stderr)
@@ -95,7 +108,9 @@ def main(argv):
     if code:
         print(f'error: ffmpeg exited {code}', file=sys.stderr)
         return code
-    print(f'{a.out}: {start:.3f}-{start + a.seconds:.3f} s of the wav, {len(lanes)} lanes')
+    lead = lead_frames(a.lead_ms)
+    print(f'{a.out}: {start:.3f}-{start + a.seconds:.3f} s of the wav, {len(lanes)} lanes, '
+          f'lead {lead} frames ({lead * 1000 / FPS:.1f} ms)')
     return 0
 
 

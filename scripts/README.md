@@ -87,6 +87,8 @@ python3 scripts/rpp.py ~/Music/Singles/Published/<name>/<name>.RPP base.sidecar.
   takes, a track with both MIDI and audio items.
 - Check clip: `scripts/rpp/checkclip.py out.sidecar.json track.wav clip.mp4` draws 60 s from the first drum
   downbeat: a full-frame flash per beat (orange on downbeats), one labelled row per lane, the audio muxed in.
+  An event lights the first frame at or after it, at full brightness. `--lead-ms N` draws every flash and tick
+  N ms earlier, rounded to whole frames (at 60 fps, 30 ms is 2 frames); the audio and the sidecar are unchanged.
 - Tests: `/secondary/hyst-env/analyze-py/bin/python -m pytest scripts/rpp -q` (synthetic project and click tracks).
 
 ## Schema 4 — what it adds and why

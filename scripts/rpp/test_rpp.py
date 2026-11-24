@@ -11,6 +11,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from rpp import checkclip
 from rpp import offset as off
 from rpp.project import parse, read
 
@@ -335,3 +336,21 @@ def test_cli_exits_non_zero_with_a_message_on_an_ambiguous_offset(project, tmp_p
     assert _cli().main([str(project), str(base), str(out), '--wav', str(wav)]) == 2
     assert 'ambiguous offset' in capsys.readouterr().err
     assert not out.exists()
+
+
+def _starts(on):
+    return np.flatnonzero(on & ~np.r_[False, on[:-1]]).tolist()
+
+
+@pytest.mark.parametrize('lead_ms', [0, 30, 60, 90, 120])
+def test_check_clip_lead_moves_every_flash_and_tick_earlier(lead_ms):
+    side = {'beats': [1.0 + 0.5 * k for k in range(8)], 'downbeats': [1.0, 3.0],
+            'lanes': [{'name': 'Kick', 'events': [{'t': 1.25 + 0.5 * k} for k in range(6)]}]}
+    shift = round(lead_ms * checkclip.FPS / 1000)
+    plain = checkclip.states(side, 0.5, 300)
+    led = checkclip.states(side, 0.5, 300, lead_ms)
+    for a, b in zip([plain[0], plain[1], *plain[2]], [led[0], led[1], *led[2]], strict=True):
+        assert _starts(b) == [k - shift for k in _starts(a)]
+    # Without lead an event lights the first frame at or after it: ceil, never earlier.
+    assert _starts(plain[0]) == [30, 150]
+    assert _starts(plain[2][0]) == [45 + 30 * k for k in range(6)]
