@@ -82,6 +82,10 @@ python3 scripts/rpp.py ~/Music/Singles/Published/<name>/<name>.RPP base.sidecar.
 - Followed: square tempo points and time-signature changes in `TEMPOENVEX`, looped MIDI items, `SOFFS`,
   item play rate, `IGNTEMPO`, folder mutes. Left out: muted tracks and items, tracks without events, events
   outside the wav. A track recorded as audio becomes an `items` lane of item starts.
+- Sampler tracks (first instrument plugin DecentSampler or ReaSamplOmatic5000) get one lane per pitch used, ascending,
+  named `<track> · <sound>`. For DecentSampler the sound is the preset group's name (else the sample's file name),
+  read from the preset file named in the plugin state (read-only); a zone over several notes gives `<name> <pitch>`.
+  With no readable preset, or another sampler, the lane is `<track> · <pitch>`. Other tracks stay one lane.
 - Solo is ignored: only mute is read, so a project saved with a track soloed still yields every unmuted track.
 - Refused with a message: tempo ramps, project play rate other than 1, play-speed envelopes, items with several
   takes, a track with both MIDI and audio items.
@@ -121,6 +125,10 @@ python3 scripts/rpp.py ~/Music/Singles/Published/<name>/<name>.RPP base.sidecar.
 - Followed: square tempo points and time-signature changes in `TEMPOENVEX`, looped MIDI items, `SOFFS`,
   item play rate, `IGNTEMPO`, folder mutes. Left out: muted tracks and items, tracks without events, events
   outside the wav. A track recorded as audio becomes an `items` lane of item starts.
+- Sampler tracks (first instrument plugin DecentSampler or ReaSamplOmatic5000) get one lane per pitch used, ascending,
+  named `<track> · <sound>`. For DecentSampler the sound is the preset group's name (else the sample's file name),
+  read from the preset file named in the plugin state (read-only); a zone over several notes gives `<name> <pitch>`.
+  With no readable preset, or another sampler, the lane is `<track> · <pitch>`. Other tracks stay one lane.
 - Solo is ignored: only mute is read, so a project saved with a track soloed still yields every unmuted track.
 - Refused with a message: tempo ramps, project play rate other than 1, play-speed envelopes, items with several
   takes, a track with both MIDI and audio items.

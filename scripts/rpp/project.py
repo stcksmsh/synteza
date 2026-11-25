@@ -6,6 +6,8 @@ import bisect
 import re
 from dataclasses import dataclass, field
 
+from .sampler import note_names, sampler_plugin
+
 _TOKEN = re.compile(r'"([^"]*)"|\'([^\']*)\'|`([^`]*)`|(\S+)')
 
 
@@ -264,7 +266,13 @@ def lanes(root, tmap):
             seen[name] = seen.get(name, 0) + 1
             if seen[name] > 1:  # several tracks share a name; keep lanes apart in project order
                 name = f'{name} #{seen[name]}'
-            out.append(Lane(name, 'midi' if midi else 'items', sorted(midi or items, key=lambda e: (e[0], e[1] or 0))))
+            sampler = sampler_plugin(track) if midi else None
+            if sampler is None:
+                out.append(Lane(name, 'midi' if midi else 'items', sorted(midi or items, key=lambda e: (e[0], e[1] or 0))))
+            else:  # each note of a sampler is a different instrument
+                names = note_names(sampler)
+                for pitch in sorted({e[1] for e in midi}):
+                    out.append(Lane(f'{name} · {names.get(pitch, pitch)}', 'midi', sorted(e for e in midi if e[1] == pitch)))
         bus = track.first('ISBUS')
         delta = int(bus[2]) if bus is not None and len(bus) > 2 else 0
         if delta > 0:
