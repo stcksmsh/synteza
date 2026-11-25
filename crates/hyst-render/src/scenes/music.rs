@@ -30,7 +30,8 @@ pub struct SceneInputs {
     pub dt: f32,
     /// Continuous beat count: `floor` is the beat index, `fract` the phase.
     pub beat: f32,
-    /// Continuous bar count, from the sidecar's downbeats.
+    /// Continuous bar count, from the sidecar's exact `downbeats` when it
+    /// has them, else its `Downbeat` events, else a quarter of `beat`.
     pub bar: f32,
     /// Relative loudness, 0..1 on the song's own scale.
     pub energy: f32,
@@ -112,12 +113,15 @@ fn env_at(values: &[f32], rate: f32, t: f32) -> f32 {
 
 impl SongTrack {
     pub fn new(sidecar: &Sidecar) -> Self {
-        let downbeats: Vec<f32> = sidecar
-            .events
-            .iter()
-            .filter(|e| e.kind == hyst_core::sidecar::SidecarEventType::Downbeat)
-            .map(|e| e.t as f32)
-            .collect();
+        let downbeats: Vec<f32> = match &sidecar.downbeats {
+            Some(exact) if exact.len() >= 2 => exact.iter().map(|&t| t as f32).collect(),
+            _ => sidecar
+                .events
+                .iter()
+                .filter(|e| e.kind == hyst_core::sidecar::SidecarEventType::Downbeat)
+                .map(|e| e.t as f32)
+                .collect(),
+        };
         let strengths: Vec<f32> = sidecar.onsets.iter().map(|o| o.strength).collect();
         let loud_onset = percentile(&strengths, 0.9).max(1e-4);
         Self {
@@ -179,6 +183,84 @@ impl SongTrack {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Beats every 0.5 s over 20 s, `Downbeat` events off the beat grid,
+    /// plus whatever `extra` fields are given.
+    fn sidecar(events: &[f64], extra: serde_json::Value) -> Sidecar {
+        let beats: Vec<f64> = (0..40).map(|i| i as f64 * 0.5).collect();
+        let events: Vec<serde_json::Value> = events
+            .iter()
+            .map(|t| serde_json::json!({"type": "downbeat", "t": t, "strength": 1.0}))
+            .collect();
+        let mut json = serde_json::json!({
+            "schema": 4,
+            "duration": 20.0,
+            "tempo": 120.0,
+            "beats": beats,
+            "sections": [],
+            "events": events,
+            "onsets": [],
+            "energyEnvelope": [0.1, 0.2],
+            "bandEnvelope": {"sub": [0.1], "low": [0.1], "mid": [0.1], "presence": [0.1], "air": [0.1]},
+            "centroidEnvelope": [0.5],
+            "flatnessEnvelope": [0.3],
+            "envelopeRate": 20.0
+        });
+        if let serde_json::Value::Object(fields) = extra {
+            json.as_object_mut().unwrap().extend(fields);
+        }
+        Sidecar::from_json_str(&json.to_string()).unwrap()
+    }
+
+    fn bars(sidecar: &Sidecar) -> Vec<f32> {
+        let mut track = SongTrack::new(sidecar);
+        (0..=600)
+            .map(|i| track.advance(i as f32 / 30.0, 1.0 / 30.0).bar)
+            .collect()
+    }
+
+    /// Exact downbeats win over conflicting `Downbeat` events.
+    #[test]
+    fn bars_follow_exact_downbeats() {
+        let sc = sidecar(
+            &[5.94, 8.47],
+            serde_json::json!({"downbeats": [0.0, 2.0, 4.0]}),
+        );
+        let bar = SongTrack::new(&sc).advance(3.0, 1.0 / 30.0).bar;
+        assert!((bar - 1.5).abs() < 1e-5, "bar at 3 s: {bar}");
+    }
+
+    /// Without usable `downbeats` the bar count is what it was before the
+    /// field existed: `Downbeat` events when there are two or more, else
+    /// beat / 4.
+    #[test]
+    fn bars_unchanged_without_downbeats() {
+        let events = [5.94, 8.47, 10.49];
+        let from_events: Vec<f32> = (0..=600)
+            .map(|i| grid_count(&events.map(|t| t as f32), i as f32 / 30.0, 2.0))
+            .collect();
+        let quarter_beats: Vec<f32> = (0..=600)
+            .map(|i| {
+                grid_count(
+                    &(0..40).map(|b| b as f32 * 0.5).collect::<Vec<_>>(),
+                    i as f32 / 30.0,
+                    0.5,
+                ) / 4.0
+            })
+            .collect();
+        for extra in [
+            serde_json::json!({}),
+            serde_json::json!({"downbeats": []}),
+            serde_json::json!({"downbeats": [1.0]}),
+        ] {
+            assert_eq!(
+                bars(&sidecar(&events, extra.clone())),
+                from_events,
+                "{extra}"
+            );
+            assert_eq!(bars(&sidecar(&[], extra.clone())), quarter_beats, "{extra}");
+        }
+    }
 
     /// The beat count is continuous and increasing across grid points, an
     /// irregular gap, and both extrapolated ends.

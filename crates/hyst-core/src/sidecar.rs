@@ -163,6 +163,10 @@ pub struct Sidecar {
     pub novelty_local_envelope: Option<Vec<f32>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub novelty_section_envelope: Option<Vec<f32>>,
+    /// Bar start times from an exact grid (a DAW project); when present
+    /// they are the source of truth for bars, over `Downbeat` events.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub downbeats: Option<Vec<f64>>,
 }
 
 impl Sidecar {
@@ -247,6 +251,19 @@ mod tests {
         let json = serde_json::to_string(&sidecar).unwrap();
         let reparsed = Sidecar::from_json_str(&json).unwrap();
         assert_eq!(reparsed.stem_presence.unwrap().vocals, vec![0.1]);
+    }
+
+    #[test]
+    fn downbeats_field_is_optional() {
+        let without = Sidecar::from_json_str(minimal_schema2_json()).unwrap();
+        assert_eq!(without.downbeats, None);
+        let with = minimal_schema2_json().replacen(
+            "\"tempo\": 128.0,",
+            "\"tempo\": 128.0, \"downbeats\": [0.0, 2.0, 4.0],",
+            1,
+        );
+        let with = Sidecar::from_json_str(&with).unwrap();
+        assert_eq!(with.downbeats, Some(vec![0.0, 2.0, 4.0]));
     }
 
     #[test]
