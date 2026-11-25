@@ -21,8 +21,8 @@ kabl V2's video half (kabl depends on synteza, never the reverse). Plan: docs/PL
 ## Waiting on owner
 - Gate 1 (WO-2): per pair, which is more on the beat, X / Y / no difference.
 - Does each drum row of /secondary/hyst-data/synteza/wo1b/afterimage-lanes.mp4 light on its drum?
-- Repo secret SITE_DISPATCH_TOKEN: the "notify site" workflow fails on master pushes since at least
-  2026-08-09 with HTTP 401 Bad credentials. Only the owner can set secrets.
+- Repo secret SITE_DISPATCH_TOKEN: every "notify site" run among the last 40 on master failed (earliest
+  2026-08-09), HTTP 401 Bad credentials. Only the owner can set secrets.
 - PLAN.md section 11; soonest: which two av_proof looks for WO-4.
 
 ## Next (docs/PLAN.md section 9; stop at each gate)
@@ -35,8 +35,9 @@ kabl V2's video half (kabl depends on synteza, never the reverse). Plan: docs/PL
 ## Decisions
 - Julia stopped; sketch scenes rejected as looks. Structure comes from the best tier available (DAW project >
   offline analysis > live audio) and the sidecar says which. Every work order ends in a clip, judged blind.
-- No visual lead baked in: owner's device accepts -100..+150 ms as "together" (calibration 2026-11-25), so fine
-  timing cannot be judged from his clips. Lead is a show-time setting (checkclip.py still defaults to 83 ms).
+- No visual lead baked in. Calibration 2026-11-25 (flash vs beep, his usual device): he called -100, +50 and
+  +150 ms "ok" and did not pick the exact 0 ms segment, so fine timing cannot be judged from his clips. Lead is a
+  show-time setting (checkclip.py still defaults to 83 ms).
 - A lane is one Reaper track; sampler tracks (DecentSampler, ReaSamplOmatic5000) split one lane per note.
 - Automatic first; authoring and live later on the same cue stream. Lights/lasers: simulation only.
 - afekt (the arm) is wholly separate; it uses synteza only via SYNTEZA_DIR (scripts/analyze*, beat_pll).
