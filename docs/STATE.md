@@ -26,9 +26,9 @@ kabl V2's video half (kabl depends on synteza, never the reverse). Plan: docs/PL
 - PLAN.md section 11; soonest: which two av_proof looks for WO-4.
 
 ## Next (docs/PLAN.md section 9; stop at each gate)
-1. Gate 1 passes -> WO-3: one sketch scene, 3-4 layers each bound to one lane (kick = afterimage Generator /
-   panicspiral KICK; Perc 1 · SN, Perc 1 · OH, a synth); blind A/B vs WO-2. Gate 2: still "simple"?
-   Gate 1 fails (both read off) -> drop the sketches, go to WO-4.
+1. WO-3 after Gate 1 is answered: one sketch scene, 3-4 layers each bound to one lane (kick = afterimage
+   Generator / panicspiral KICK; Perc 1 · SN, Perc 1 · OH, a synth); blind A/B vs WO-2. Gate 2: still "simple"?
+   Only if Gates 1 and 2 both fail are the scenes the problem: drop the sketches, go to WO-4 (PLAN.md section 9).
 2. WO-4 port two av_proof looks; WO-5 cue model + switching; WO-6 director.
 3. Independent: hyst-audio BeatTracker reads 119.68 BPM on every track (beat.rs:49, :114-115).
 
@@ -39,6 +39,7 @@ kabl V2's video half (kabl depends on synteza, never the reverse). Plan: docs/PL
   timing cannot be judged from his clips. Lead is a show-time setting (checkclip.py still defaults to 83 ms).
 - A lane is one Reaper track; sampler tracks (DecentSampler, ReaSamplOmatic5000) split one lane per note.
 - Automatic first; authoring and live later on the same cue stream. Lights/lasers: simulation only.
+- afekt (the arm) is wholly separate; it uses synteza only via SYNTEZA_DIR (scripts/analyze*, beat_pll).
 
 ## Hard-won facts
 - afterimage, panicspiral, event_horizon: 120 BPM 4/4, no tempo points, no markers or regions; wav offset ~0 ms.
