@@ -342,15 +342,91 @@ def _starts(on):
     return np.flatnonzero(on & ~np.r_[False, on[:-1]]).tolist()
 
 
-@pytest.mark.parametrize('lead_ms', [0, 30, 60, 90, 120])
-def test_check_clip_lead_moves_every_flash_and_tick_earlier(lead_ms):
+def _lane(*notes):
+    return {'beats': [], 'downbeats': [],
+            'lanes': [{'name': 'L', 'events': [{'t': t, 'pitch': p, 'velocity': 100, 'length': ln} for t, p, ln in notes]}]}
+
+
+def test_check_clip_lead_moves_every_flash_and_mark_earlier():
     side = {'beats': [1.0 + 0.5 * k for k in range(8)], 'downbeats': [1.0, 3.0],
-            'lanes': [{'name': 'Kick', 'events': [{'t': 1.25 + 0.5 * k} for k in range(6)]}]}
-    shift = round(lead_ms * checkclip.FPS / 1000)
-    plain = checkclip.states(side, 0.5, 300)
-    led = checkclip.states(side, 0.5, 300, lead_ms)
-    for a, b in zip([plain[0], plain[1], *plain[2]], [led[0], led[1], *led[2]], strict=True):
-        assert _starts(b) == [k - shift for k in _starts(a)]
+            'lanes': [{'name': 'Kick', 'events': [{'t': 1.25 + 0.5 * k, 'length': 0.1} for k in range(6)]}]}
+    plain = checkclip.states(side, 0.5, 300, 0)
+    led = checkclip.states(side, 0.5, 300)  # default lead
+    assert checkclip.DEFAULT_LEAD_MS == 83.0
     # Without lead an event lights the first frame at or after it: ceil, never earlier.
     assert _starts(plain[0]) == [30, 150]
-    assert _starts(plain[2][0]) == [45 + 30 * k for k in range(6)]
+    assert _starts(plain[2][0][1][0]) == [45 + 30 * k for k in range(6)]
+    for a, b in [(plain[0], led[0]), (plain[1], led[1]), (plain[2][0][1][0], led[2][0][1][0])]:
+        assert _starts(b) == [k - 5 for k in _starts(a)]
+
+
+def test_check_clip_note_is_lit_for_its_length():
+    level, cap, _ = checkclip.states(_lane((1.0, 60, 0.5)), 0.0, 120, 0)[2][0]
+    assert int((level[0] > 0).sum()) == 30
+    assert np.flatnonzero(level[0]).tolist() == list(range(60, 90))
+    assert not level[1:].any()
+
+
+def test_check_clip_short_note_lasts_a_frame_and_has_a_mark():
+    level, cap, _ = checkclip.states(_lane((1.0, 36, 0.0)), 0.0, 120, 0)[2][0]
+    assert np.flatnonzero(level[0]).tolist() == [60]
+    assert np.flatnonzero(cap[0]).tolist() == list(range(60, 60 + checkclip.START_FRAMES))
+
+
+def test_check_clip_overlapping_notes_get_separate_stripes_even_at_one_pitch():
+    level, _, _ = checkclip.states(_lane((1.0, 60, 1.0), (1.5, 60, 1.0)), 0.0, 180, 0)[2][0]
+    sounding = (level > 0).sum(axis=0)
+    assert sounding[60:90].tolist() == [1] * 30
+    assert sounding[90:120].tolist() == [2] * 30
+    assert sounding[120:150].tolist() == [1] * 30
+    assert sounding[150:].sum() == 0
+
+
+def test_check_clip_back_to_back_same_pitch_notes_each_get_a_start_mark():
+    level, cap, _ = checkclip.states(_lane((1.0, 60, 0.5), (1.5, 60, 0.5)), 0.0, 180, 0)[2][0]
+    marks = cap.any(axis=0)
+    assert np.flatnonzero(marks).tolist() == list(range(60, 64)) + list(range(90, 94))
+    assert (level.sum(axis=0)[60:120] > 0).all()
+
+
+def test_check_clip_note_sounding_at_window_start_is_drawn_without_mark():
+    level, cap, _ = checkclip.states(_lane((0.5, 60, 2.0)), 1.0, 120, 0)[2][0]
+    assert np.flatnonzero(level[0]).tolist() == list(range(0, 90))
+    assert not cap.any()
+
+
+def test_check_clip_extra_notes_share_the_last_stripe_and_flag_overflow():
+    n = checkclip.MAX_STRIPES + 1
+    level, _, over = checkclip.states(_lane(*[(1.0, 60 + i, 1.0) for i in range(n)]), 0.0, 180, 0)[2][0]
+    assert (level[:, 70] > 0).all()
+    assert over[70] and not over[130]
+
+
+def test_check_clip_lane_without_notes_in_window_gets_no_row():
+    side = {'beats': [], 'downbeats': [], 'lanes': [
+        {'name': 'A', 'events': [{'t': 1.0, 'length': 0.5}]},
+        {'name': 'B', 'events': [{'t': 50.0, 'length': 0.5}]},
+        {'name': 'C', 'events': [{'t': 0.0, 'length': 0.5}]}]}
+    rows = checkclip.states(side, 0.9, 120)[2]
+    assert [v[0] for v in checkclip.visible(side, rows)] == ['A']
+
+
+def test_check_clip_stripe_count_is_the_lanes_max_overlap_in_window():
+    side = _lane((1.0, 60, 1.0), (1.5, 62, 1.0), (1.6, 64, 0.1), (5.0, 60, 0.5))
+    side['lanes'].append({'name': 'M', 'events': [{'t': 1.0, 'length': 1.0}, {'t': 3.0, 'length': 1.0}]})
+    rows = checkclip.states(side, 0.0, 420, 0)[2]
+    assert [(v[0], len(v[1])) for v in checkclip.visible(side, rows)] == [('L', 3), ('M', 1)]
+
+
+def test_check_clip_notes_before_the_window_do_not_inflate_the_stripe_count():
+    side = _lane((-3.0, 60, 0.5), (-3.0, 62, 0.5), (-3.0, 64, 20.0))
+    rows = checkclip.states(side, 0.0, 120, 0)[2]
+    (_, level, _, _), = checkclip.visible(side, rows)
+    assert len(level) == 1 and (level[0] > 0).all()
+
+
+def test_check_clip_note_ending_on_the_frame_another_starts_shares_the_stripe():
+    side = _lane((1.0, 60, 0.5), (1.5, 62, 0.5))
+    rows = checkclip.states(side, 0.0, 180, 0)[2]
+    (_, level, _, _), = checkclip.visible(side, rows)
+    assert len(level) == 1
