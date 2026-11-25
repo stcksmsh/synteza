@@ -21,8 +21,8 @@ kabl V2's video half (kabl depends on synteza, never the reverse). Plan: docs/PL
 ## Waiting on owner
 - Gate 1 (WO-2): per pair, which is more on the beat, X / Y / no difference.
 - Does each drum row of /secondary/hyst-data/synteza/wo1b/afterimage-lanes.mp4 light on its drum?
-- Repo secret SITE_DISPATCH_TOKEN: the "notify site" workflow fails on every master push since at least
-  2026-11-23 with HTTP 401 Bad credentials. Only the owner can set secrets.
+- Repo secret SITE_DISPATCH_TOKEN: the "notify site" workflow fails on master pushes since at least
+  2026-08-09 with HTTP 401 Bad credentials. Only the owner can set secrets.
 - PLAN.md section 11; soonest: which two av_proof looks for WO-4.
 
 ## Next (docs/PLAN.md section 9; stop at each gate)
