@@ -1,18 +1,22 @@
 #!/usr/bin/env python3
-"""A check clip for a DAW sidecar: the track's audio under a full-frame flash on every beat (another colour on
-downbeats) and one labelled row per lane whose tick lights at each of the lane's events.
+"""A check clip for a DAW sidecar: the track's audio under a thin beat strip (orange on downbeats) and one labelled
+row per lane showing what the lane plays: a note is lit for its real length, in a stripe of its own while others
+sound (a chord is several stripes, at most MAX_STRIPES), brighter for louder, with a white cap for the first
+START_FRAMES frames of every note so legato and repeated pitches still show each start.
 
-checkclip.py sidecar.json track.wav out.mp4 [--start S] [--seconds 60] [--drums REGEX] [--lead-ms 0]
+checkclip.py sidecar.json track.wav out.mp4 [--start S] [--seconds 60] [--drums REGEX] [--lead-ms 83]
 
 The window starts at --start, or by default at the downbeat at or before the first event of a lane whose name
-matches --drums. Frame k shows wav time start + k/FPS, so an event first lights the frame ceil((t - start) * FPS),
-at full brightness for FLASH_S. --lead-ms draws every flash and tick that much earlier, rounded to whole frames
-so every flash moves by the same number of frames; the audio is untouched.
+matches --drums. Frame k shows wav time start + k/FPS; a note first lights the frame ceil((t - start) * FPS) and
+stays lit while t <= frame time < t + length, for at least one frame. Notes already sounding at the window start are
+drawn sustaining, without a cap. Stripes beyond MAX_STRIPES share the last stripe, drawn in OVERFLOW_RGB.
+--lead-ms draws everything that much earlier, rounded to whole frames; the audio is untouched.
 Frames are drawn with numpy and piped to ffmpeg, which adds the labels and the audio.
 """
 import argparse
 import bisect
 import json
+import math
 import re
 import subprocess
 import sys
@@ -22,32 +26,61 @@ from pathlib import Path
 import numpy as np
 
 W, H, FPS = 960, 540, 60
-FLASH_S = 0.06
 BEAT_RGB = (0, 90, 255)
 DOWNBEAT_RGB = (255, 70, 0)
-TICK_ON, TICK_OFF = (255, 255, 255), (45, 45, 45)
+NOTE_RGB, OVERFLOW_RGB, CAP_RGB, EMPTY_RGB = (0, 200, 255), (255, 200, 0), (255, 255, 255), (30, 30, 30)
 FONT = '/usr/share/fonts/truetype/noto/NotoSansMono-Regular.ttf'
-LABEL_W, ROW_H, TICK_W = 330, 36, 120
-
-
-def lit(times, frame_times):
-    """For each frame, whether an event started within FLASH_S before it."""
-    t = np.asarray(sorted(times))
-    i = np.searchsorted(t, frame_times, side='right') - 1
-    ok = i >= 0
-    return ok & (frame_times - t[np.clip(i, 0, None)] < FLASH_S) if len(t) else np.zeros(len(frame_times), bool)
+LABEL_W, BOX_W, CAP_W = 330, 500, 40
+STRIP_H, ROWS_TOP, ROW_MAX = 24, 40, 60
+MAX_STRIPES, START_FRAMES = 6, 4
+DEFAULT_LEAD_MS = 83.0
 
 
 def lead_frames(lead_ms):
     return round(lead_ms * FPS / 1000)
 
 
-def states(side, start, n, lead_ms=0.0):
-    """Per frame: downbeat flash, beat flash, and one tick row per lane, drawn lead_ms (in whole frames) early."""
-    ft = start + (np.arange(n) + lead_frames(lead_ms)) / FPS
-    downbeat = lit(side['downbeats'], ft)
-    beat = lit(side['beats'], ft) & ~downbeat
-    return downbeat, beat, [lit([e['t'] for e in lane['events']], ft) for lane in side['lanes']]
+def beat_lit(times, frame_times):
+    """For each frame, whether a beat started within 60 ms before it."""
+    t = np.asarray(sorted(times))
+    i = np.searchsorted(t, frame_times, side='right') - 1
+    ok = i >= 0
+    return ok & (frame_times - t[np.clip(i, 0, None)] < 0.06) if len(t) else np.zeros(len(frame_times), bool)
+
+
+def lane_states(events, start, n, lead):
+    """(level, cap, over): level[s, k] is 0..255 brightness of stripe s at frame k (0 = dark),
+    cap[s, k] the start mark, over[k] whether a note had no free stripe at frame k and was drawn on the last one.
+    A note takes the lowest stripe free at its first frame, so overlapping notes never share one."""
+    level = np.zeros((MAX_STRIPES, n), np.uint8)
+    cap = np.zeros((MAX_STRIPES, n), bool)
+    over = np.zeros(n, bool)
+    free = [-math.inf] * MAX_STRIPES  # first frame each stripe is free again
+    for e in sorted(events, key=lambda e: e['t']):
+        f0 = math.ceil((e['t'] - start) * FPS - 1e-9) - lead
+        f1 = max(f0 + 1, math.ceil((e['t'] + e.get('length', 0) - start) * FPS - 1e-9) - lead)
+        s = next((i for i in range(MAX_STRIPES) if free[i] <= f0), None)
+        clamped = s is None
+        s = MAX_STRIPES - 1 if clamped else s
+        free[s] = max(free[s], f1)
+        if f1 <= 0 or f0 >= n:
+            continue
+        a, b = max(f0, 0), min(f1, n)
+        v = 80 + 175 * min(e.get('velocity', 127), 127) // 127
+        over[a:b] |= clamped
+        level[s, a:b] = np.maximum(level[s, a:b], v)
+        if f0 >= 0:
+            cap[s, f0:min(f0 + START_FRAMES, n)] = True
+    return level, cap, over
+
+
+def states(side, start, n, lead_ms=DEFAULT_LEAD_MS):
+    """Per frame: downbeat flash, beat flash, and a (level, cap, over) triple per lane, all drawn lead_ms early."""
+    lead = lead_frames(lead_ms)
+    ft = start + (np.arange(n) + lead) / FPS
+    downbeat = beat_lit(side['downbeats'], ft)
+    beat = beat_lit(side['beats'], ft) & ~downbeat
+    return downbeat, beat, [lane_states(lane['events'], start, n, lead) for lane in side['lanes']]
 
 
 def default_start(side, drums):
@@ -66,7 +99,7 @@ def main(argv):
     ap.add_argument('--start', type=float)
     ap.add_argument('--seconds', type=float, default=60.0)
     ap.add_argument('--drums', default='(?i)kick|clap|hat|perc|snare')
-    ap.add_argument('--lead-ms', type=float, default=0.0)
+    ap.add_argument('--lead-ms', type=float, default=DEFAULT_LEAD_MS)
     a = ap.parse_args(argv)
     side = json.loads(Path(a.sidecar).read_text(encoding='utf-8'))
     try:
@@ -77,8 +110,9 @@ def main(argv):
     n = round(a.seconds * FPS)
     downbeat, beat, rows = states(side, start, n, a.lead_ms)
     lanes = side['lanes']
-    top = H - 20 - ROW_H * len(lanes)
-    if top < 20:
+    row_h = min(ROW_MAX, (H - ROWS_TOP - 20) // max(len(lanes), 1))
+    stripe_h = (row_h - 6) // MAX_STRIPES
+    if stripe_h < 2:
         print(f'error: {len(lanes)} lanes do not fit', file=sys.stderr)
         return 1
 
@@ -88,7 +122,7 @@ def main(argv):
             f = Path(tmp) / f'label{i}.txt'
             f.write_text(lane['name'], encoding='utf-8')
             filters.append(f"drawtext=fontfile={FONT}:textfile={f}:fontsize=20:fontcolor=white:"
-                           f"box=1:boxcolor=black:boxborderw=4:x=20:y={top + i * ROW_H + 6}")
+                           f"box=1:boxcolor=black:boxborderw=4:x=20:y={ROWS_TOP + i * row_h + row_h // 2 - 12}")
         cmd = ['ffmpeg', '-v', 'error', '-y',
                '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-s', f'{W}x{H}', '-r', str(FPS), '-i', '-',
                '-ss', f'{start:.6f}', '-t', f'{a.seconds:.6f}', '-i', a.wav,
@@ -98,10 +132,19 @@ def main(argv):
         proc = subprocess.Popen(cmd, stdin=subprocess.PIPE)
         frame = np.zeros((H, W, 3), np.uint8)
         for k in range(n):
-            frame[:] = DOWNBEAT_RGB if downbeat[k] else BEAT_RGB if beat[k] else (0, 0, 0)
-            for i, row in enumerate(rows):
-                y = top + i * ROW_H + 4
-                frame[y:y + ROW_H - 8, LABEL_W:LABEL_W + TICK_W] = TICK_ON if row[k] else TICK_OFF
+            frame[:] = 0
+            frame[:STRIP_H] = DOWNBEAT_RGB if downbeat[k] else BEAT_RGB if beat[k] else 0
+            for i, (level, cap, over) in enumerate(rows):
+                for s in range(MAX_STRIPES):
+                    y = ROWS_TOP + i * row_h + 3 + s * stripe_h
+                    y1 = y + stripe_h - 1
+                    box = frame[y:y1, LABEL_W:LABEL_W + BOX_W]
+                    box[:] = EMPTY_RGB
+                    if level[s, k]:
+                        rgb = OVERFLOW_RGB if s == MAX_STRIPES - 1 and over[k] else NOTE_RGB
+                        box[:, CAP_W:] = np.array(rgb) * level[s, k] // 255
+                    if cap[s, k]:
+                        box[:, :CAP_W] = CAP_RGB
             proc.stdin.write(frame.tobytes())
         proc.stdin.close()
         code = proc.wait()

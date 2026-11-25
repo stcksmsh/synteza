@@ -85,6 +85,45 @@ python3 scripts/rpp.py ~/Music/Singles/Published/<name>/<name>.RPP base.sidecar.
 - Solo is ignored: only mute is read, so a project saved with a track soloed still yields every unmuted track.
 - Refused with a message: tempo ramps, project play rate other than 1, play-speed envelopes, items with several
   takes, a track with both MIDI and audio items.
+- Check clip: `scripts/rpp/checkclip.py out.sidecar.json track.wav clip.mp4 [--start S] [--seconds N]` draws a thin beat
+  strip at the top (orange on downbeats) and one labelled row per lane, the audio muxed in. A note is lit for its
+  real length (at least one frame), brighter for higher velocity; notes sounding together get a stripe each (at most
+  6; beyond that they share the last stripe, drawn yellow); a white cap marks the first 4 frames of every note, so
+  legato and repeated pitches show each start. A note already sounding at the window start is drawn without a cap.
+  Everything is drawn 83 ms (5 frames at 60 fps) early by default; `--lead-ms N` overrides, rounded to whole
+  frames. The audio and the sidecar are unchanged.
+- Tests: `/secondary/hyst-env/analyze-py/bin/python -m pytest scripts/analyze -q` (synthetic only).
+- Equivalence against the TS analyzer: `scripts/analyze/equiv/run_equiv.sh OUT NAME=WAV ...`
+  (needs `node_modules`; runs both, times them, compares with `equiv/compare.py`).
+  Rule and results: afekt's `docs/DANCE_HANDOFF.md` (github stcksmsh/afekt), entry 2026-10-23.
+- To switch `song.sh`: replace `npx tsx scripts/analyze.ts "$wav" "$D/$slug.sidecar.json"` by
+  `/secondary/hyst-env/analyze-py/bin/python scripts/analyze.py "$wav" "$D/$slug.sidecar.json"`.
+
+## Exact grid and lanes from a Reaper project (`rpp.py`, package `rpp/`)
+
+When the track's Reaper project exists, the beat grid and note times need not be estimated:
+
+```
+python3 scripts/rpp.py ~/Music/Singles/Published/<name>/<name>.RPP base.sidecar.json out.sidecar.json [--wav W]
+```
+
+- Reads the project text only (never opens or writes it). Adds `source: "daw"`, `downbeats`, `lanes[]`
+  (`{name, kind: "midi" | "items", events[{t, pitch, velocity, length}]}`) and `markers[]` (`{name, start, end}`;
+  a point marker has `start == end`) to the base sidecar, and replaces `beats` and `tempo` with the project grid.
+  No other key changes. Same inputs give a byte-identical file.
+- All times are wav seconds. The offset between project and wav is measured (`rpp/offset.py`): the first event
+  against the wav's first audible sample (the anchor), then every lane's events against the wav's onsets over
+  ±4 s of the anchor, cut to 0..first event when the project renders the entire project. A decisive peak there
+  wins; otherwise the peak within 60 ms of the anchor, but only when it agrees or the wav starts sharply (from
+  silence to -40 dBFS within 10 ms). Then a per-event match for the residual. It prints offset, residual, which
+  search decided, peak ratio and each lane's own offset, and exits 2 when the offset is ambiguous or the residual
+  is over 20 ms. The offset applied is rounded to whole ms.
+- Followed: square tempo points and time-signature changes in `TEMPOENVEX`, looped MIDI items, `SOFFS`,
+  item play rate, `IGNTEMPO`, folder mutes. Left out: muted tracks and items, tracks without events, events
+  outside the wav. A track recorded as audio becomes an `items` lane of item starts.
+- Solo is ignored: only mute is read, so a project saved with a track soloed still yields every unmuted track.
+- Refused with a message: tempo ramps, project play rate other than 1, play-speed envelopes, items with several
+  takes, a track with both MIDI and audio items.
 - Check clip: `scripts/rpp/checkclip.py out.sidecar.json track.wav clip.mp4` draws 60 s from the first drum
   downbeat: a full-frame flash per beat (orange on downbeats), one labelled row per lane, the audio muxed in.
   An event lights the first frame at or after it, at full brightness. `--lead-ms N` draws every flash and tick
