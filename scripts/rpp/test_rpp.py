@@ -497,3 +497,28 @@ def test_sampler_lanes_fall_back_to_pitches_when_the_preset_is_not_there_or_not_
 def test_sampler_without_a_readable_preset_format_gets_pitch_names(tmp_path):
     p = _sampler_project(tmp_path, plugin='VSTi: ReaSamplOmatic5000 (Cockos)')
     assert _names(p)[:2] == [('Perc · 36', 2), ('Perc · 38', 1)]
+
+
+def _preset_file(tmp_path, body, dirname='kits'):
+    d = tmp_path / dirname
+    d.mkdir()
+    f = d / 'Kit.dspreset'
+    f.write_text(f'<DecentSampler><groups>{body}</groups></DecentSampler>')
+    return f
+
+
+def test_preset_url_with_an_encoded_hash_resolves_and_a_nul_byte_falls_back(tmp_path):
+    f = _preset_file(tmp_path, '<group name="BD" loNote="36" hiNote="36"><sample path="a.wav"/></group>', 'a#b')
+    assert _names(_sampler_project(tmp_path, f.as_uri().replace('#', '%23')))[0] == ('Perc · BD', 2)
+    assert _names(_sampler_project(tmp_path, 'file://' + str(f).replace('#', '%00')))[0] == ('Perc · 36', 2)
+
+
+def test_zone_outside_the_midi_range_is_clamped(tmp_path):
+    f = _preset_file(tmp_path, '<group name="All" loNote="-5" hiNote="2000000000"><sample path="a.wav"/></group>')
+    assert _names(_sampler_project(tmp_path, f.as_uri()))[0] == ('Perc · All 36', 2)
+
+
+def test_repeated_sound_names_get_the_pitch(tmp_path):
+    f = _preset_file(tmp_path, '<group name="X" loNote="36" hiNote="36"><sample path="a.wav"/></group>'
+                               '<group name="X" loNote="38" hiNote="38"><sample path="b.wav"/></group>')
+    assert [n for n, _ in _names(_sampler_project(tmp_path, f.as_uri()))[:2]] == ['Perc · X 36', 'Perc · X 38']

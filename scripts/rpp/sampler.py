@@ -38,8 +38,8 @@ def _preset_path(vst):
     m = _URL.search(state)
     if m is None:
         return None
-    url = urlparse(unquote(m.group(1).decode('utf-8', 'replace')))
-    return Path(url.path) if url.scheme == 'file' else None
+    url = urlparse(m.group(1).decode('utf-8', 'replace'))
+    return Path(unquote(url.path)) if url.scheme == 'file' else None
 
 
 def _int(el, key, default):
@@ -55,7 +55,7 @@ def note_names(vst):
     path = _preset_path(vst)
     try:
         root = ET.parse(path).getroot() if path else None
-    except (OSError, ET.ParseError):
+    except (OSError, ValueError, ET.ParseError):  # ValueError: a NUL byte in the path
         return {}
     if root is None:
         return {}
@@ -69,6 +69,6 @@ def note_names(vst):
                 zones.append((lo, hi, name))
     out = {}
     for lo, hi, name in zones:
-        for p in range(lo, hi + 1):
+        for p in range(max(lo, 0), min(hi, 127) + 1):
             out.setdefault(p, name if lo == hi else f'{name} {p}')
     return out
