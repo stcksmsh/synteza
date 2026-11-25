@@ -7,6 +7,7 @@
 //! (about 0..2). [`SceneRenderer`] mixes the scenes by weight in HDR, then
 //! runs the shared output chain (mip bloom, hue-keeping tonemap, dither).
 
+pub mod avproof;
 pub mod feedback;
 pub mod grid;
 pub mod growth;
