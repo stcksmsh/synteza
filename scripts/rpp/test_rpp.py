@@ -416,3 +416,17 @@ def test_check_clip_stripe_count_is_the_lanes_max_overlap_in_window():
     side['lanes'].append({'name': 'M', 'events': [{'t': 1.0, 'length': 1.0}, {'t': 3.0, 'length': 1.0}]})
     rows = checkclip.states(side, 0.0, 420, 0)[2]
     assert [(v[0], len(v[1])) for v in checkclip.visible(side, rows)] == [('L', 3), ('M', 1)]
+
+
+def test_check_clip_notes_before_the_window_do_not_inflate_the_stripe_count():
+    side = _lane((-3.0, 60, 0.5), (-3.0, 62, 0.5), (-3.0, 64, 20.0))
+    rows = checkclip.states(side, 0.0, 120, 0)[2]
+    (_, level, _, _), = checkclip.visible(side, rows)
+    assert len(level) == 1 and (level[0] > 0).all()
+
+
+def test_check_clip_note_ending_on_the_frame_another_starts_shares_the_stripe():
+    side = _lane((1.0, 60, 0.5), (1.5, 62, 0.5))
+    rows = checkclip.states(side, 0.0, 180, 0)[2]
+    (_, level, _, _), = checkclip.visible(side, rows)
+    assert len(level) == 1

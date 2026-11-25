@@ -59,12 +59,12 @@ def lane_states(events, start, n, lead):
     for e in sorted(events, key=lambda e: e['t']):
         f0 = math.ceil((e['t'] - start) * FPS - 1e-9) - lead
         f1 = max(f0 + 1, math.ceil((e['t'] + e.get('length', 0) - start) * FPS - 1e-9) - lead)
+        if f1 <= 0 or f0 >= n:  # outside the window: must not take a stripe, or the in-window ones are not contiguous
+            continue
         s = next((i for i in range(MAX_STRIPES) if free[i] <= f0), None)
         clamped = s is None
         s = MAX_STRIPES - 1 if clamped else s
         free[s] = max(free[s], f1)
-        if f1 <= 0 or f0 >= n:
-            continue
         a, b = max(f0, 0), min(f1, n)
         v = 80 + 175 * min(e.get('velocity', 127), 127) // 127
         over[a:b] |= clamped
@@ -126,7 +126,7 @@ def main(argv):
         return 1
     row_h = (H - ROWS_TOP - 20) // len(lanes)
     bar_h = row_h - ROW_GAP
-    if bar_h < MAX_STRIPES * 2:
+    if bar_h < 2 * max(len(level) for _, level, _, _ in lanes):
         print(f'error: {len(lanes)} lanes do not fit', file=sys.stderr)
         return 1
 
