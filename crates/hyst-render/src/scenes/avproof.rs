@@ -152,7 +152,7 @@ impl Row {
         let lower = name.to_lowercase();
         Self {
             pitched: notes.iter().any(|n| Some(n.pitch) != first),
-            kick: lower.contains("kick") || lower == "generator",
+            kick: lower.contains("kick") || lower.contains("generator"),
             lead: lower.contains("lead") || lower.contains("main synth"),
             longest,
             notes,
@@ -1425,8 +1425,12 @@ mod tests {
         ]));
         let mut av = AvProof::new(&sc, 1920, 1080, 48000.0);
         let shocks = |av: &AvProof| av.rings.iter().filter(|r| r.max_r == av.h * 0.55).count();
-        run(&mut av, 0, 60);
-        assert_eq!(shocks(&av), 0, "no shockwave before the kick");
+        // Checked every frame: a shockwave lives 0.7 s, so one wrongly
+        // started by the Clap at 1.0 s would be gone by frame 60.
+        for i in 0..=60 {
+            run(&mut av, i, i);
+            assert_eq!(shocks(&av), 0, "no shockwave before the kick (frame {i})");
+        }
         run(&mut av, 61, 61);
         let born: Vec<f32> = av
             .rings
@@ -1440,6 +1444,25 @@ mod tests {
             "shockwave starts at {} for a kick at 2.01 s",
             born[0]
         );
+    }
+
+    #[test]
+    fn kick_lane_names() {
+        for name in [
+            "KICK",
+            "Kick 2",
+            "Generator",
+            "Generator 1",
+            "Generator (Kick)",
+        ] {
+            assert!(Row::new(name, Vec::new()).kick, "{name} is a kick lane");
+        }
+        for name in ["Clap", "Perc 1 · BD", "MAIN SYNTH"] {
+            assert!(
+                !Row::new(name, Vec::new()).kick,
+                "{name} is not a kick lane"
+            );
+        }
     }
 
     /// Without lanes the beats drive one row and the shockwave.
