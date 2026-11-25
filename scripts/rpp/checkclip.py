@@ -31,7 +31,7 @@ DOWNBEAT_RGB = (255, 70, 0)
 NOTE_RGB, OVERFLOW_RGB, CAP_RGB, EMPTY_RGB = (0, 200, 255), (255, 200, 0), (255, 255, 255), (30, 30, 30)
 FONT = '/usr/share/fonts/truetype/noto/NotoSansMono-Regular.ttf'
 LABEL_W, BOX_W, CAP_W = 330, 500, 40
-STRIP_H, ROWS_TOP, ROW_MAX = 24, 40, 60
+STRIP_H, ROWS_TOP, ROW_GAP = 24, 40, 12
 MAX_STRIPES, START_FRAMES = 6, 4
 DEFAULT_LEAD_MS = 83.0
 
@@ -83,6 +83,17 @@ def states(side, start, n, lead_ms=DEFAULT_LEAD_MS):
     return downbeat, beat, [lane_states(lane['events'], start, n, lead) for lane in side['lanes']]
 
 
+def visible(side, rows):
+    """Only lanes with a note sounding in the window, each cut to as many stripes as its most simultaneous notes."""
+    out = []
+    for lane, (level, cap, over) in zip(side['lanes'], rows, strict=True):
+        used = np.flatnonzero(level.any(axis=1))
+        if len(used):
+            k = used[-1] + 1
+            out.append((lane['name'], level[:k], cap[:k], over))
+    return out
+
+
 def default_start(side, drums):
     firsts = [lane['events'][0]['t'] for lane in side['lanes'] if re.search(drums, lane['name'])]
     if not firsts:
@@ -109,20 +120,23 @@ def main(argv):
         return 1
     n = round(a.seconds * FPS)
     downbeat, beat, rows = states(side, start, n, a.lead_ms)
-    lanes = side['lanes']
-    row_h = min(ROW_MAX, (H - ROWS_TOP - 20) // max(len(lanes), 1))
-    stripe_h = (row_h - 6) // MAX_STRIPES
-    if stripe_h < 2:
+    lanes = visible(side, rows)
+    if not lanes:
+        print('error: no lane has a note in the window', file=sys.stderr)
+        return 1
+    row_h = (H - ROWS_TOP - 20) // len(lanes)
+    bar_h = row_h - ROW_GAP
+    if bar_h < MAX_STRIPES * 2:
         print(f'error: {len(lanes)} lanes do not fit', file=sys.stderr)
         return 1
 
     with tempfile.TemporaryDirectory() as tmp:
         filters = []
-        for i, lane in enumerate(lanes):  # label text goes through files so no name needs escaping
+        for i, (name, *_) in enumerate(lanes):  # label text goes through files so no name needs escaping
             f = Path(tmp) / f'label{i}.txt'
-            f.write_text(lane['name'], encoding='utf-8')
+            f.write_text(name, encoding='utf-8')
             filters.append(f"drawtext=fontfile={FONT}:textfile={f}:fontsize=20:fontcolor=white:"
-                           f"box=1:boxcolor=black:boxborderw=4:x=20:y={ROWS_TOP + i * row_h + row_h // 2 - 12}")
+                           f"box=1:boxcolor=black:boxborderw=4:x=20:y={ROWS_TOP + i * row_h + bar_h // 2 - 12}")
         cmd = ['ffmpeg', '-v', 'error', '-y',
                '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-s', f'{W}x{H}', '-r', str(FPS), '-i', '-',
                '-ss', f'{start:.6f}', '-t', f'{a.seconds:.6f}', '-i', a.wav,
@@ -134,10 +148,11 @@ def main(argv):
         for k in range(n):
             frame[:] = 0
             frame[:STRIP_H] = DOWNBEAT_RGB if downbeat[k] else BEAT_RGB if beat[k] else 0
-            for i, (level, cap, over) in enumerate(rows):
-                for s in range(MAX_STRIPES):
-                    y = ROWS_TOP + i * row_h + 3 + s * stripe_h
-                    y1 = y + stripe_h - 1
+            for i, (_, level, cap, over) in enumerate(lanes):
+                stripe_h = bar_h // len(level)
+                for s in range(len(level)):
+                    y = ROWS_TOP + i * row_h + s * stripe_h
+                    y1 = y + stripe_h - (2 if stripe_h > 4 else 1)
                     box = frame[y:y1, LABEL_W:LABEL_W + BOX_W]
                     box[:] = EMPTY_RGB
                     if level[s, k]:

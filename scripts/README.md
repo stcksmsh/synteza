@@ -86,7 +86,7 @@ python3 scripts/rpp.py ~/Music/Singles/Published/<name>/<name>.RPP base.sidecar.
 - Refused with a message: tempo ramps, project play rate other than 1, play-speed envelopes, items with several
   takes, a track with both MIDI and audio items.
 - Check clip: `scripts/rpp/checkclip.py out.sidecar.json track.wav clip.mp4 [--start S] [--seconds N]` draws a thin beat
-  strip at the top (orange on downbeats) and one labelled row per lane, the audio muxed in. A note is lit for its
+  strip at the top (orange on downbeats) and one labelled row per lane that has a note in the window (a lane with none gets no row), the audio muxed in. A row has as many stripes as that lane's most simultaneous notes in the window, and rows fill the frame height. A note is lit for its
   real length (at least one frame), brighter for higher velocity; notes sounding together get a stripe each (at most
   6; beyond that they share the last stripe, drawn yellow); a white cap marks the first 4 frames of every note, so
   legato and repeated pitches show each start. A note already sounding at the window start is drawn without a cap.
@@ -125,7 +125,7 @@ python3 scripts/rpp.py ~/Music/Singles/Published/<name>/<name>.RPP base.sidecar.
 - Refused with a message: tempo ramps, project play rate other than 1, play-speed envelopes, items with several
   takes, a track with both MIDI and audio items.
 - Check clip: `scripts/rpp/checkclip.py out.sidecar.json track.wav clip.mp4` draws 60 s from the first drum
-  downbeat: a full-frame flash per beat (orange on downbeats), one labelled row per lane, the audio muxed in.
+  downbeat: a full-frame flash per beat (orange on downbeats), one labelled row per lane that has a note in the window (a lane with none gets no row), the audio muxed in. A row has as many stripes as that lane's most simultaneous notes in the window, and rows fill the frame height.
   An event lights the first frame at or after it, at full brightness. `--lead-ms N` draws every flash and tick
   N ms earlier, rounded to whole frames (at 60 fps, 30 ms is 2 frames); the audio and the sidecar are unchanged.
 - Tests: `/secondary/hyst-env/analyze-py/bin/python -m pytest scripts/rpp -q` (synthetic project and click tracks).

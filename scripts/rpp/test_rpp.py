@@ -400,3 +400,19 @@ def test_check_clip_extra_notes_share_the_last_stripe_and_flag_overflow():
     level, _, over = checkclip.states(_lane(*[(1.0, 60 + i, 1.0) for i in range(n)]), 0.0, 180, 0)[2][0]
     assert (level[:, 70] > 0).all()
     assert over[70] and not over[130]
+
+
+def test_check_clip_lane_without_notes_in_window_gets_no_row():
+    side = {'beats': [], 'downbeats': [], 'lanes': [
+        {'name': 'A', 'events': [{'t': 1.0, 'length': 0.5}]},
+        {'name': 'B', 'events': [{'t': 50.0, 'length': 0.5}]},
+        {'name': 'C', 'events': [{'t': 0.0, 'length': 0.5}]}]}
+    rows = checkclip.states(side, 0.9, 120)[2]
+    assert [v[0] for v in checkclip.visible(side, rows)] == ['A']
+
+
+def test_check_clip_stripe_count_is_the_lanes_max_overlap_in_window():
+    side = _lane((1.0, 60, 1.0), (1.5, 62, 1.0), (1.6, 64, 0.1), (5.0, 60, 0.5))
+    side['lanes'].append({'name': 'M', 'events': [{'t': 1.0, 'length': 1.0}, {'t': 3.0, 'length': 1.0}]})
+    rows = checkclip.states(side, 0.0, 420, 0)[2]
+    assert [(v[0], len(v[1])) for v in checkclip.visible(side, rows)] == [('L', 3), ('M', 1)]
