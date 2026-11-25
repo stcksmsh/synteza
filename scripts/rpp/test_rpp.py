@@ -430,3 +430,95 @@ def test_check_clip_note_ending_on_the_frame_another_starts_shares_the_stripe():
     rows = checkclip.states(side, 0.0, 180, 0)[2]
     (_, level, _, _), = checkclip.visible(side, rows)
     assert len(level) == 1
+
+
+def _sampler_project(tmp_path, preset_url=None, plugin='VST3i: DecentSampler (Decidedly)'):
+    """A DecentSampler track playing 36 and 38 (36 twice), a Surge XT track playing 60 and 64."""
+    import base64
+    state = b'junk<DecentSampler _libraryUrl="%s">' % (preset_url or 'file:///nonexistent/none.dspreset').encode()
+    b64 = base64.b64encode(state).decode()
+
+    def track(name, vst, pitches):
+        ev = ''.join(f'E 0 90 {p:02x} 60\nE 240 80 {p:02x} 00\n' for p in pitches)
+        return f"""<TRACK
+    NAME {name}
+    <FXCHAIN
+      <VST "VST: ReaEQ (Cockos)" reaeq.vst.so 0 "" 1<5653>
+      >
+      <VST "{vst}" x.vst3 0 "" 1{{AB}} ""
+        {b64}
+      >
+    >
+    <ITEM
+      POSITION 0
+      LENGTH 4
+      LOOP 0
+      <SOURCE MIDI
+        HASDATA 1 960 QN
+        {ev}
+      >
+    >
+  >"""
+    p = tmp_path / 'sampler.RPP'
+    p.write_text(f'<REAPER_PROJECT 0.1 "7.0" 0\n  TEMPO 120 4 4 0\n  {track("Perc", plugin, [36, 38, 36])}\n'
+                 f'  {track("Keys", "VST3i: Surge XT (Surge Synth Team)", [60, 64])}\n>\n')
+    return p
+
+
+def _preset(tmp_path):
+    f = tmp_path / 'Kit.dspreset'
+    f.write_text('<DecentSampler><groups>'
+                 '<group name="BD" rootNote="36" loNote="36" hiNote="36"><sample path="samples/bd.wav"/></group>'
+                 '<group rootNote="38" loNote="38" hiNote="39"><sample path="samples/snare.wav"/></group>'
+                 '</groups></DecentSampler>')
+    return f
+
+
+def _names(path):
+    return [(lane.name, len(lane.events)) for lane in read(path)[2]]
+
+
+def test_sampler_track_gets_one_lane_per_pitch_and_a_synth_track_one(tmp_path):
+    p = _sampler_project(tmp_path)
+    assert _names(p) == [('Perc · 36', 2), ('Perc · 38', 1), ('Keys', 2)]
+
+
+def test_sampler_lanes_are_named_from_a_readable_preset(tmp_path):
+    p = _sampler_project(tmp_path, _preset(tmp_path).as_uri())
+    assert _names(p) == [('Perc · BD', 2), ('Perc · snare 38', 1), ('Keys', 2)]
+
+
+def test_sampler_lanes_fall_back_to_pitches_when_the_preset_is_not_there_or_not_xml(tmp_path):
+    bad = tmp_path / 'bad.dspreset'
+    bad.write_text('not xml')
+    assert _names(_sampler_project(tmp_path, bad.as_uri()))[0] == ('Perc · 36', 2)
+
+
+def test_sampler_without_a_readable_preset_format_gets_pitch_names(tmp_path):
+    p = _sampler_project(tmp_path, plugin='VSTi: ReaSamplOmatic5000 (Cockos)')
+    assert _names(p)[:2] == [('Perc · 36', 2), ('Perc · 38', 1)]
+
+
+def _preset_file(tmp_path, body, dirname='kits'):
+    d = tmp_path / dirname
+    d.mkdir()
+    f = d / 'Kit.dspreset'
+    f.write_text(f'<DecentSampler><groups>{body}</groups></DecentSampler>')
+    return f
+
+
+def test_preset_url_with_an_encoded_hash_resolves_and_a_nul_byte_falls_back(tmp_path):
+    f = _preset_file(tmp_path, '<group name="BD" loNote="36" hiNote="36"><sample path="a.wav"/></group>', 'a#b')
+    assert _names(_sampler_project(tmp_path, f.as_uri().replace('#', '%23')))[0] == ('Perc · BD', 2)
+    assert _names(_sampler_project(tmp_path, 'file://' + str(f).replace('#', '%00')))[0] == ('Perc · 36', 2)
+
+
+def test_zone_outside_the_midi_range_is_clamped(tmp_path):
+    f = _preset_file(tmp_path, '<group name="All" loNote="-5" hiNote="2000000000"><sample path="a.wav"/></group>')
+    assert _names(_sampler_project(tmp_path, f.as_uri()))[0] == ('Perc · All 36', 2)
+
+
+def test_repeated_sound_names_get_the_pitch(tmp_path):
+    f = _preset_file(tmp_path, '<group name="X" loNote="36" hiNote="36"><sample path="a.wav"/></group>'
+                               '<group name="X" loNote="38" hiNote="38"><sample path="b.wav"/></group>')
+    assert [n for n, _ in _names(_sampler_project(tmp_path, f.as_uri()))[:2]] == ['Perc · X 36', 'Perc · X 38']
