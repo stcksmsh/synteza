@@ -8,12 +8,19 @@
 //! the output size below 1080 lines, then averaged down.
 //!
 //! Each lane drives the scene by its character ([`lanes::classify`]):
-//! - sustained lanes (long or legato notes with a moving pitch) are flowing
-//!   ribbons orbiting the core. A ribbon's radius follows the pitch contour
-//!   through a spring, its curl follows the pitch's motion, and its life
-//!   follows the held notes and the phrase. At most [`MAX_RIBBONS`].
+//! - sustained lanes (long or legato notes with a moving pitch) get a form,
+//!   at most [`MAX_RIBBONS`], each in its own colour, weight and place:
+//!   - a melody is a ribbon. Its head's height is the pitch, rising with it
+//!     over the lane's own range in the lane's band ([`MELODY_BANDS`]),
+//!     gliding to each new note over [`GLIDE`] seconds and still while a
+//!     note is held. Its trail flows away to the left and drifts slowly up.
+//!   - a chord lane ([`lanes::Character::Chordal`]) is a band of dotted
+//!     rings around the core, one per chord tone, spaced by the voicing and
+//!     moving to each new chord over [`CHORD_GLIDE`] seconds.
+//!
+//!   Both live while their notes are held and fade with the phrase.
 //! - percussive lanes push what is already there: each hit is an impulse on
-//!   the drifting dust, the ribbons' trails and the core, scaled by velocity
+//!   the drifting dust, the melody trails (lightly) and the core, scaled by velocity
 //!   and decaying with drag. Kicks push outward, snares twist, hats shiver,
 //!   toms shove from a side, anything else pushes out from the spectrum ring
 //!   at its pitch.
@@ -30,7 +37,7 @@
 mod lanes;
 
 use std::collections::VecDeque;
-use std::f32::consts::{FRAC_PI_2, PI, TAU};
+use std::f32::consts::{FRAC_PI_2, FRAC_PI_4, PI, TAU};
 
 use hyst_core::sidecar::Sidecar;
 use wgpu::util::DeviceExt;
@@ -192,6 +199,25 @@ const PHRASE_GAP: f32 = 1.5;
 const PHRASE_RELEASE: f32 = 2.0;
 /// Dust particles always present for the hits to push.
 const DUST: usize = 1400;
+/// Melody bands, busiest melody first: centre height and span, as shares of
+/// the frame height. A melody's head height is its pitch.
+const MELODY_BANDS: [(f32, f32); MAX_RIBBONS] =
+    [(0.40, 0.42), (0.78, 0.18), (0.10, 0.10), (0.92, 0.08)];
+/// Seconds a melody head takes to glide to a new note.
+const GLIDE: f32 = 0.10;
+/// Seconds a chord band takes to move to a new voicing.
+const CHORD_GLIDE: f32 = 0.35;
+/// Chord bands: inner radius of the first, the step to the next, and the
+/// radius per semitone of voicing, shares of the frame height.
+const CHORD_R0: f32 = 0.22;
+const CHORD_STEP: f32 = 0.15;
+const CHORD_SEMI: f32 = 0.008;
+/// Share of the frame width a melody trail crosses over its life.
+const TRAIL_SPAN: f32 = 0.42;
+/// A melody trail's upward drift, share of the frame height per second.
+const TRAIL_RISE: f32 = 0.035;
+/// Share of a drum's push a melody trail takes; hats give none.
+const RIBBON_PUSH: f32 = 0.05;
 
 fn mix(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
     [
@@ -237,7 +263,8 @@ pub fn cues(sidecar: &Sidecar) -> Vec<Cue> {
         .collect()
 }
 
-/// A trail point of a ribbon; it drifts when hits push it.
+/// A trail point of a melody ribbon: it flows away from the head and
+/// drifts a little when hits push it.
 struct TrailPt {
     x: f32,
     y: f32,
@@ -246,25 +273,67 @@ struct TrailPt {
     age: f32,
     /// The ribbon's level when the point was laid.
     a: f32,
-    /// Half width and twist phase when laid.
-    w: f32,
-    twist: f32,
 }
 
-/// A sustained lane's flowing form.
+/// A portamento: from `from` to `to` along a smoothstep over `dur` seconds,
+/// so it never overshoots or turns back.
+#[derive(Clone, Copy, Debug)]
+struct Glide {
+    from: f32,
+    to: f32,
+    g: f32,
+    dur: f32,
+}
+
+impl Glide {
+    fn new(v: f32, dur: f32) -> Self {
+        Self {
+            from: v,
+            to: v,
+            g: dur,
+            dur,
+        }
+    }
+
+    fn value(&self) -> f32 {
+        let s = (self.g / self.dur).clamp(0.0, 1.0);
+        self.from + (self.to - self.from) * s * s * (3.0 - 2.0 * s)
+    }
+
+    /// Starts a glide from where it is now, unless already heading to `to`.
+    fn retarget(&mut self, to: f32) {
+        if to != self.to {
+            self.from = self.value();
+            self.to = to;
+            self.g = 0.0;
+        }
+    }
+}
+
+/// What a sustained lane is drawn as, and its place: the melody band or
+/// the chord ring it has.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Form {
+    Melody(usize),
+    Chord(usize),
+}
+
+/// A sustained lane's form.
 struct Ribbon {
-    slot: usize,
+    form: Form,
     /// Pitch range of the lane.
     lo: f32,
     hi: f32,
     level: f32,
-    /// Normalised pitch target, 0..1.
-    pitch: f32,
-    /// Radius around the core, its speed, and the orbit angle.
-    r: f32,
-    rv: f32,
-    ang: f32,
-    twist: f32,
+    /// Melody: head height.
+    y: Glide,
+    /// Chord: inner and outer radius of the band, before the swell.
+    r_lo: Glide,
+    r_hi: Glide,
+    /// Chord: the pitches of the latest chord.
+    tones: Vec<u8>,
+    /// Slow sway (melody) or turn (chord), radians.
+    phase: f32,
     head: Pt,
     trail: VecDeque<TrailPt>,
     /// Segments drawn last frame.
@@ -272,6 +341,7 @@ struct Ribbon {
 }
 
 struct Lane {
+    name: String,
     notes: Vec<Note>,
     /// Latest note end among `notes[..=i]`.
     ends: Vec<f32>,
@@ -300,6 +370,7 @@ impl Lane {
             .collect();
         let lower = name.to_lowercase();
         Self {
+            name: name.to_string(),
             character: lanes::classify(name, &notes),
             drum: lanes::drum(name),
             pitched: notes.iter().any(|n| Some(n.pitch) != first),
@@ -547,26 +618,28 @@ impl AvProof {
                 vec![("beats".to_string(), lane)]
             }
         };
-        // Only the first kick and lead lanes count as such.
+        // Only the first kick and lead lanes count as such; a chord lane
+        // leads nothing.
         let (mut kick_seen, mut lead_seen) = (false, false);
         for (_, l) in &mut lanes {
             l.kick &= !kick_seen && l.character == Character::Percussive;
             kick_seen |= l.kick;
-            l.lead &= !lead_seen;
+            l.lead &= !lead_seen && l.character != Character::Chordal;
             lead_seen |= l.lead;
         }
         if !lead_seen {
             if let Some((_, l)) = lanes
                 .iter_mut()
-                .filter(|(_, l)| l.pitched)
+                .filter(|(_, l)| l.pitched && l.character != Character::Chordal)
                 .max_by_key(|(_, l)| l.notes.len())
             {
                 l.lead = true;
             }
         }
-        // Ribbons for the busiest sustained lanes.
+        // Forms for the busiest sustained lanes: a melody band each for
+        // single-note lines, a ring each for chords.
         let mut sustained: Vec<usize> = (0..lanes.len())
-            .filter(|&i| lanes[i].1.character == Character::Sustained)
+            .filter(|&i| lanes[i].1.character != Character::Percussive)
             .collect();
         sustained.sort_by_key(|&i| (std::cmp::Reverse(lanes[i].1.notes.len()), i));
         if sustained.len() > MAX_RIBBONS {
@@ -580,32 +653,51 @@ impl AvProof {
                 dropped.join(", ")
             );
         }
-        let (cy, hf) = (h as f32 * 0.42, h as f32);
-        for (slot, &i) in sustained.iter().take(MAX_RIBBONS).enumerate() {
+        let (wf, hf) = (w as f32, h as f32);
+        let (mut melodies, mut chords) = (0, 0);
+        for &i in sustained.iter().take(MAX_RIBBONS) {
             let l = &mut lanes[i].1;
             let lo = l.notes.iter().map(|n| n.pitch).min().unwrap_or(60) as f32;
             let hi = l.notes.iter().map(|n| n.pitch).max().unwrap_or(60) as f32;
-            let r = ribbon_radius(slot, hf, 0.5);
-            l.ribbon = Some(Ribbon {
-                slot,
+            let form = if l.character == Character::Chordal {
+                chords += 1;
+                Form::Chord(chords - 1)
+            } else {
+                melodies += 1;
+                Form::Melody(melodies - 1)
+            };
+            let mut rb = Ribbon {
+                form,
                 lo,
                 hi,
                 level: 0.0,
-                pitch: 0.5,
-                r,
-                rv: 0.0,
-                ang: slot as f32 * TAU / MAX_RIBBONS as f32,
-                twist: 0.0,
-                head: (w as f32 * 0.5 + r, cy),
+                y: Glide::new(0.0, GLIDE),
+                r_lo: Glide::new(0.0, CHORD_GLIDE),
+                r_hi: Glide::new(0.0, CHORD_GLIDE),
+                tones: Vec::new(),
+                phase: 0.0,
+                head: (0.0, 0.0),
                 trail: VecDeque::new(),
                 drawn: 0,
-            });
+            };
+            match form {
+                Form::Melody(b) => {
+                    rb.y = Glide::new(melody_y(&rb, (lo + hi) * 0.5, hf), GLIDE);
+                    rb.head = (melody_x(b, wf), rb.y.value());
+                }
+                Form::Chord(c) => {
+                    let r = chord_r(c, hf, 0.0);
+                    rb.r_lo = Glide::new(r, CHORD_GLIDE);
+                    rb.r_hi = Glide::new(r, CHORD_GLIDE);
+                }
+            }
+            l.ribbon = Some(rb);
         }
         for (name, l) in &lanes {
             let role = match (&l.ribbon, l.character) {
-                (Some(r), _) => format!("sustained: ribbon {}", r.slot),
-                (None, Character::Sustained) => "sustained: no ribbon".into(),
+                (Some(r), _) => format!("{:?}", r.form),
                 (None, Character::Percussive) => format!("percussive: {:?} push", l.drum),
+                (None, c) => format!("{c:?}: no form"),
             };
             let extra = match (l.kick, l.lead) {
                 (true, _) => "; core pulse and shockwave",
@@ -922,96 +1014,96 @@ impl AvProof {
                 .dot(false, (p.x, p.y), self.pal[p.col], look.dust * fade, 1);
         }
 
-        // Ribbons: sustained lanes, flowing around the core.
+        // Sustained lanes: melodies as ribbons whose head height is the
+        // pitch, chords as bands of rings around the core.
         let mut comet: Option<(Pt, f32)> = None;
         for li in 0..self.lanes.len() {
-            let held = self.lanes[li]
-                .held_at(t, dt)
-                .map(|n| (n.pitch, n.vel))
-                .max_by_key(|&(p, _)| p);
+            let held: Vec<Note> = self.lanes[li].held_at(t, dt).copied().collect();
             let in_phrase = self.lanes[li].in_phrase(t);
             let lead = self.lanes[li].lead;
-            let mut rnds = Vec::new();
-            if let Some(rb) = &self.lanes[li].ribbon {
-                for _ in 0..rb.trail.len() {
-                    rnds.push((self.rand() * 2.0 - 1.0, self.rand() * 2.0 - 1.0));
-                }
-            }
             let Some(rb) = self.lanes[li].ribbon.as_mut() else {
                 continue;
             };
-            let (goal, tau) = match held {
-                Some((p, v)) => {
-                    rb.pitch = (p as f32 - rb.lo) / (rb.hi - rb.lo).max(1.0);
-                    (0.55 + 0.45 * v, 0.12)
-                }
-                None if in_phrase => (0.0, PHRASE_RELEASE),
-                None => (0.0, look.release),
+            let release = if in_phrase {
+                PHRASE_RELEASE
+            } else {
+                look.release
             };
-            rb.level = goal + (rb.level - goal) * (-dt / tau).exp();
-            // Radius follows the pitch through a critically damped spring;
-            // a rising or falling pitch curls the orbit.
-            let span = h * 0.10;
-            let target = ribbon_radius(rb.slot, h, rb.pitch);
-            let om = 4.0;
-            rb.rv += (om * om * (target - rb.r) - 2.0 * om * rb.rv) * dt;
-            rb.r += rb.rv * dt;
-            let dir = if rb.slot % 2 == 0 { 1.0 } else { -1.0 };
-            rb.ang += dt * (dir * (0.30 + 0.08 * rb.slot as f32) + 1.5 * rb.rv / span);
-            rb.twist += dt * 1.7;
-            rb.head = (cx + rb.r * rb.ang.cos(), cy + rb.r * rb.ang.sin() * 0.62);
-            for (pt, rnd) in rb.trail.iter_mut().zip(rnds) {
-                for imp in &impulses {
-                    let (dx, dy) = imp.at((pt.x, pt.y), (cx, cy), h, rnd);
-                    pt.vx += dx;
-                    pt.vy += dy;
+            match rb.form {
+                Form::Melody(band) => {
+                    // The latest note sounding is the one the line is on.
+                    let (goal, tau) = match held.last() {
+                        Some(n) => {
+                            rb.y.retarget(melody_y(rb, n.pitch as f32, h));
+                            (0.55 + 0.45 * n.vel, 0.12)
+                        }
+                        None => (0.0, release),
+                    };
+                    rb.level = goal + (rb.level - goal) * (-dt / tau).exp();
+                    rb.y.g += dt;
+                    rb.phase += dt * 0.25;
+                    rb.head = (melody_x(band, w) + 0.01 * w * rb.phase.sin(), rb.y.value());
+                    let flow = TRAIL_SPAN * w / look.trail;
+                    for pt in rb.trail.iter_mut() {
+                        for imp in impulses.iter().filter(|i| i.drum != Drum::Hat) {
+                            let (dx, dy) = imp.at((pt.x, pt.y), (cx, cy), h, (0.0, 0.0));
+                            pt.vx += dx * RIBBON_PUSH;
+                            pt.vy += dy * RIBBON_PUSH;
+                        }
+                        pt.x += pt.vx * k - flow * dt;
+                        pt.y += pt.vy * k - TRAIL_RISE * h * dt;
+                        pt.vx *= drag;
+                        pt.vy *= drag;
+                        pt.age += dt;
+                    }
+                    while rb.trail.front().is_some_and(|p| p.age > look.trail) {
+                        rb.trail.pop_front();
+                    }
+                    if rb.level > 0.01 {
+                        rb.trail.push_back(TrailPt {
+                            x: rb.head.0,
+                            y: rb.head.1,
+                            vx: 0.0,
+                            vy: 0.0,
+                            age: 0.0,
+                            a: rb.level,
+                        });
+                    }
+                    let col = mix(self.pal[MELODY_COLOUR[band]], [1.0, 1.0, 1.0], 0.3);
+                    rb.drawn = draw_melody(&mut self.layers, rb, band, col, look.trail, dt, u);
+                    if lead {
+                        comet = Some((rb.head, rb.level));
+                    }
                 }
-                pt.x += pt.vx * k;
-                pt.y += pt.vy * k;
-                pt.vx *= drag;
-                pt.vy *= drag;
-                pt.age += dt;
-            }
-            while rb.trail.front().is_some_and(|p| p.age > look.trail) {
-                rb.trail.pop_front();
-            }
-            if rb.level > 0.01 {
-                let vel = held.map_or(0.6, |(_, v)| v);
-                rb.trail.push_back(TrailPt {
-                    x: rb.head.0,
-                    y: rb.head.1,
-                    vx: 0.0,
-                    vy: 0.0,
-                    age: 0.0,
-                    a: rb.level,
-                    w: (4.0 + 9.0 * vel) * u,
-                    twist: rb.twist,
-                });
-            }
-            let col = self.pal[rb.slot % 4];
-            let bright = mix(col, [1.0, 1.0, 1.0], 0.3);
-            let mut drawn = 0;
-            for (p0, p1) in rb.trail.iter().zip(rb.trail.iter().skip(1)) {
-                let f = (1.0 - p1.age / look.trail).max(0.0).powf(1.5) * p1.a;
-                if f < 0.004 {
-                    continue;
+                Form::Chord(ring) => {
+                    // The chord: the notes sounding that started together
+                    // with the latest one.
+                    let latest = held.iter().map(|n| n.t).fold(f32::NEG_INFINITY, f32::max);
+                    let mut tones: Vec<u8> = held
+                        .iter()
+                        .filter(|n| n.t >= latest - lanes::ONSET_TOGETHER)
+                        .map(|n| n.pitch)
+                        .collect();
+                    tones.sort_unstable();
+                    let (goal, tau) = match (tones.first(), tones.last()) {
+                        (Some(&a), Some(&b)) => {
+                            let vel = held.iter().map(|n| n.vel).fold(0.0, f32::max);
+                            rb.r_lo.retarget(chord_r(ring, h, a as f32 - rb.lo));
+                            rb.r_hi.retarget(chord_r(ring, h, b as f32 - rb.lo));
+                            rb.tones = tones;
+                            (0.5 + 0.5 * vel, 0.15)
+                        }
+                        _ => (0.0, release),
+                    };
+                    rb.level = goal + (rb.level - goal) * (-dt / tau).exp();
+                    rb.r_lo.g += dt;
+                    rb.r_hi.g += dt;
+                    let dir = if ring % 2 == 0 { 1.0 } else { -1.0 };
+                    rb.phase += dt * 0.10 * dir;
+                    rb.head = (cx, cy - rb.r_hi.value() * 0.62);
+                    let col = self.pal[CHORD_COLOUR[ring % CHORD_COLOUR.len()]];
+                    rb.drawn = draw_chord(&mut self.layers, rb, (cx, cy), col);
                 }
-                let (dx, dy) = (p1.x - p0.x, p1.y - p0.y);
-                let len = (dx * dx + dy * dy).sqrt().max(1e-3);
-                let (nx, ny) = (-dy / len, dx / len);
-                let (o0, o1) = (p0.w * p0.twist.sin(), p1.w * p1.twist.sin());
-                for (side, a) in [(0.0, 0.32), (1.0, 0.14), (-1.0, 0.14)] {
-                    let q0 = (p0.x + nx * o0 * side, p0.y + ny * o0 * side);
-                    let q1 = (p1.x + nx * o1 * side, p1.y + ny * o1 * side);
-                    self.layers.line(true, q0, q1, bright, a * f);
-                }
-                self.layers
-                    .line(false, (p0.x, p0.y), (p1.x, p1.y), col, 0.07 * f);
-                drawn += 1;
-            }
-            rb.drawn = drawn;
-            if lead {
-                comet = Some((rb.head, rb.level));
             }
         }
 
@@ -1120,11 +1212,147 @@ impl AvProof {
     fn flash(&self) -> f32 {
         self.flash * self.mood.look().flash
     }
+
+    /// Each sustained lane's name and where to write it, in drawing pixels:
+    /// right of a melody band's head, above its band; at the upper right of
+    /// a chord's outermost ring.
+    pub fn labels(&self) -> Vec<(String, Pt)> {
+        let (w, h) = (self.w, self.h);
+        let u = h / 1080.0;
+        self.lanes
+            .iter()
+            .filter_map(|l| {
+                let rb = l.ribbon.as_ref()?;
+                let at = match rb.form {
+                    Form::Melody(b) => {
+                        let (centre, span) = MELODY_BANDS[b];
+                        (melody_x(b, w) + 24.0 * u, h * (centre - span * 0.5))
+                    }
+                    Form::Chord(c) => {
+                        let r = chord_r(c, h, rb.hi - rb.lo);
+                        let d = FRAC_PI_4;
+                        (
+                            w * 0.5 + r * d.cos(),
+                            h * 0.42 - r * d.sin() * 0.62 - 24.0 * u,
+                        )
+                    }
+                };
+                Some((l.name.clone(), at))
+            })
+            .collect()
+    }
+
+    /// Each melody ribbon's lane name, head position in drawing pixels and
+    /// level.
+    pub fn melody_heads(&self) -> Vec<(&str, Pt, f32)> {
+        self.lanes
+            .iter()
+            .filter_map(|l| {
+                let rb = l.ribbon.as_ref()?;
+                matches!(rb.form, Form::Melody(_)).then_some((l.name.as_str(), rb.head, rb.level))
+            })
+            .collect()
+    }
 }
 
-/// A ribbon's radius around the core for a normalised pitch.
-fn ribbon_radius(slot: usize, h: f32, pitch: f32) -> f32 {
-    h * (0.22 + 0.075 * slot as f32) + (pitch - 0.5) * h * 0.10
+/// Palette entry of each melody band and chord ring, so lanes on screen
+/// together differ in colour.
+const MELODY_COLOUR: [usize; MAX_RIBBONS] = [3, 0, 2, 1];
+const CHORD_COLOUR: [usize; 2] = [1, 2];
+
+/// A melody band's head position across the frame.
+fn melody_x(band: usize, w: f32) -> f32 {
+    w * (0.84 - 0.05 * band as f32)
+}
+
+/// A melody head's height for `pitch`: up with pitch, over the lane's own
+/// range, never narrower than [`lanes::MELODY_MIN_RANGE`].
+fn melody_y(rb: &Ribbon, pitch: f32, h: f32) -> f32 {
+    let Form::Melody(band) = rb.form else {
+        unreachable!("melody_y on a chord")
+    };
+    let (centre, span) = MELODY_BANDS[band];
+    let range = (rb.hi - rb.lo).max(lanes::MELODY_MIN_RANGE);
+    let mid = (rb.hi + rb.lo) * 0.5;
+    h * (centre - (pitch - mid) / range * span)
+}
+
+/// A chord ring's radius `semis` semitones above the lane's lowest note.
+fn chord_r(ring: usize, h: f32, semis: f32) -> f32 {
+    h * (CHORD_R0 + CHORD_STEP * ring as f32 + CHORD_SEMI * semis)
+}
+
+/// Draws a melody's trail as one smooth line, thicker for the first bands.
+/// Returns the segments drawn.
+fn draw_melody(
+    layers: &mut Layers,
+    rb: &Ribbon,
+    band: usize,
+    col: [f32; 3],
+    life: f32,
+    dt: f32,
+    u: f32,
+) -> usize {
+    let strands: &[(f32, f32)] = match band {
+        0 => &[(0.0, 0.34), (1.8, 0.16), (-1.8, 0.16)],
+        1 => &[(0.0, 0.30), (1.2, 0.12)],
+        _ => &[(0.0, 0.26)],
+    };
+    let mut drawn = 0;
+    for (p0, p1) in rb.trail.iter().zip(rb.trail.iter().skip(1)) {
+        // A gap where the ribbon was silent is not bridged.
+        if p0.age - p1.age > 2.5 * dt {
+            continue;
+        }
+        let f = (1.0 - p1.age / life).max(0.0).powf(1.5) * p1.a;
+        if f < 0.004 {
+            continue;
+        }
+        let (dx, dy) = (p1.x - p0.x, p1.y - p0.y);
+        let len = (dx * dx + dy * dy).sqrt().max(1e-3);
+        let (nx, ny) = (-dy / len * u, dx / len * u);
+        for &(off, a) in strands {
+            let q0 = (p0.x + nx * off, p0.y + ny * off);
+            let q1 = (p1.x + nx * off, p1.y + ny * off);
+            layers.line(true, q0, q1, col, a * f);
+        }
+        layers.line(false, (p0.x, p0.y), (p1.x, p1.y), col, 0.06 * f);
+        drawn += 1;
+    }
+    drawn
+}
+
+/// Draws a chord as a band around the core `c`: a dotted ring per chord
+/// tone, spaced by the voicing, and a soft haze between the outer ones. It
+/// swells with the chord's level. Returns the dots drawn.
+fn draw_chord(layers: &mut Layers, rb: &Ribbon, c: Pt, col: [f32; 3]) -> usize {
+    if rb.level < 0.004 || rb.tones.is_empty() {
+        return 0;
+    }
+    let swell = 0.94 + 0.06 * rb.level;
+    let (r_lo, r_hi) = (rb.r_lo.value() * swell, rb.r_hi.value() * swell);
+    let (p_lo, p_hi) = (rb.tones[0] as f32, rb.tones[rb.tones.len() - 1] as f32);
+    let at = |r: f32, th: f32| (c.0 + r * th.cos(), c.1 + r * th.sin() * 0.62);
+    let mut drawn = 0;
+    for (i, &p) in rb.tones.iter().enumerate() {
+        let r = r_lo + (p as f32 - p_lo) / (p_hi - p_lo).max(1.0) * (r_hi - r_lo);
+        let n = (r * 0.22) as usize + 20;
+        let turn = rb.phase * (1.0 + 0.3 * i as f32) + i as f32 * 0.9;
+        for j in 0..n {
+            let th = turn + j as f32 * TAU / n as f32;
+            layers.dot(true, at(r, th), col, 0.30 * rb.level, 1);
+            drawn += 1;
+        }
+    }
+    if r_hi - r_lo > 1.0 {
+        for j in 0..160 {
+            let r = r_lo + (j as f32 * 0.618_034).fract() * (r_hi - r_lo);
+            let th = rb.phase * 0.7 + j as f32 * 2.399_963;
+            layers.dot(false, at(r, th), col, 0.05 * rb.level, 2);
+            drawn += 1;
+        }
+    }
+    drawn
 }
 
 const PRIM_VERT: &str = r#"
@@ -1519,6 +1747,26 @@ impl AvProofScene {
         ctx.queue.submit(std::iter::once(encoder.finish()));
     }
 
+    /// [`AvProof::labels`] in output pixels.
+    pub fn labels(&self) -> Vec<(String, (f32, f32))> {
+        let s = self.ss as f32;
+        self.state
+            .labels()
+            .into_iter()
+            .map(|(n, (x, y))| (n, (x / s, y / s)))
+            .collect()
+    }
+
+    /// [`AvProof::melody_heads`] in output pixels.
+    pub fn melody_heads(&self) -> Vec<(&str, (f32, f32), f32)> {
+        let s = self.ss as f32;
+        self.state
+            .melody_heads()
+            .into_iter()
+            .map(|(n, (x, y), l)| (n, (x / s, y / s), l))
+            .collect()
+    }
+
     /// Renders the frame at `inputs.t` and returns it as RGBA8. `scope` is
     /// the mono mix ending at `inputs.t`.
     pub fn render(
@@ -1756,22 +2004,24 @@ mod tests {
         assert_eq!(ribbons.len(), 3, "MAIN, SECONDARY and FX: {ribbons:?}");
     }
 
-    /// A held line keeps its ribbon present and moving on every frame.
+    /// A held line keeps its ribbon present and moving on every frame: the
+    /// head stays on the held pitch, so the trail is what flows.
     #[test]
     fn held_notes_keep_the_ribbon_alive_and_moving() {
         let sc = sidecar(serde_json::json!([lane("MAIN SYNTH", &flute(1.0, 4))]));
         let mut av = new(&sc);
         run(&mut av, 0, 35);
-        let mut head = ribbon(&av, 4).head;
         // Frames 36..147 are 1.2 s to 4.9 s, inside the four notes.
         for i in 36..=147 {
+            let last = ribbon(&av, 4).trail.back().map(|p| (p.x, p.y)).unwrap();
             run(&mut av, i, i);
             let rb = ribbon(&av, 4);
             assert!(rb.level >= 0.5, "level {} at frame {i}", rb.level);
             assert!(rb.drawn > 0, "nothing drawn at frame {i}");
-            let moved = ((rb.head.0 - head.0).powi(2) + (rb.head.1 - head.1).powi(2)).sqrt();
-            assert!(moved > 0.5, "head moved {moved} px at frame {i}");
-            head = rb.head;
+            // The point laid last frame, one frame on.
+            let p = &rb.trail[rb.trail.len() - 2];
+            let moved = ((p.x - last.0).powi(2) + (p.y - last.1).powi(2)).sqrt();
+            assert!(moved > 0.5, "trail moved {moved} px at frame {i}");
         }
         // One trail point for every frame, none missing.
         let rb = ribbon(&av, 4);
@@ -1782,6 +2032,182 @@ mod tests {
                 "trail gap: {} s",
                 a.age - b.age
             );
+        }
+    }
+
+    /// A melody's head height is its pitch: settled heights are ordered
+    /// exactly as the pitches, a held note keeps the head still, and a
+    /// glide between two notes never turns back.
+    #[test]
+    fn melody_head_height_follows_pitch_smoothly() {
+        let tune = [60u8, 64, 67, 72, 67, 64, 60];
+        let notes: Vec<_> = tune
+            .iter()
+            .enumerate()
+            .map(|(i, &p)| (1.0 + i as f64 * 0.5, p, 100, 0.5))
+            .collect();
+        let sc = sidecar(serde_json::json!([lane("Flute", &notes)]));
+        let mut av = new(&sc);
+        let span = MELODY_BANDS[0].1 * 1080.0;
+        let mut settled = Vec::new();
+        let mut prev = ribbon(&av, tune.len()).head.1;
+        let mut frame = 0;
+        for k in 0..tune.len() {
+            let onset = 1.0 + k as f32 * 0.5;
+            let mut dir = 0.0f32;
+            while (frame as f32 * DT) < onset + 0.5 - 1e-4 {
+                run(&mut av, frame, frame);
+                let t = frame as f32 * DT;
+                let y = ribbon(&av, tune.len()).head.1;
+                let dy = y - prev;
+                if t >= onset - 1e-4 && t < onset + GLIDE + DT && dy.abs() > 1e-4 {
+                    assert!(dir * dy >= 0.0, "glide turned back at {t} s");
+                    dir = dy.signum();
+                }
+                if t >= onset + GLIDE + DT {
+                    assert!(dy.abs() < 0.02 * span, "held note moved {dy} px at {t} s");
+                }
+                prev = y;
+                frame += 1;
+            }
+            settled.push(prev);
+        }
+        for (i, (&pi, &yi)) in tune.iter().zip(&settled).enumerate() {
+            for (&pj, &yj) in tune.iter().zip(&settled).skip(i + 1) {
+                match pi.cmp(&pj) {
+                    std::cmp::Ordering::Greater => assert!(yi < yj - 1.0, "{pi} not above {pj}"),
+                    std::cmp::Ordering::Less => assert!(yi > yj + 1.0, "{pi} not below {pj}"),
+                    std::cmp::Ordering::Equal => assert!((yi - yj).abs() < 0.5, "{pi} twice"),
+                }
+            }
+        }
+        // The lane's range covers its band.
+        let top = settled.iter().copied().fold(f32::MAX, f32::min);
+        let bottom = settled.iter().copied().fold(0.0, f32::max);
+        assert!(
+            bottom - top > 0.8 * span,
+            "range {} px of {span}",
+            bottom - top
+        );
+    }
+
+    /// A narrow lane still moves over a visible share of its band, and a
+    /// single pitch is a flat line.
+    #[test]
+    fn narrow_and_single_pitch_lanes() {
+        let narrow: Vec<_> = (0..6)
+            .map(|i| (1.0 + i as f64, [60u8, 61, 62][i % 3], 100, 1.0))
+            .collect();
+        let sc = sidecar(serde_json::json!([lane("Narrow", &narrow)]));
+        let mut av = new(&sc);
+        // Settled on 60 (1-2 s), then on 62 (3-4 s).
+        run(&mut av, 0, 50);
+        let low = ribbon(&av, 6).head.1;
+        run(&mut av, 51, 110);
+        let high = ribbon(&av, 6).head.1;
+        let span = MELODY_BANDS[0].1 * 1080.0;
+        let want = 2.0 / lanes::MELODY_MIN_RANGE * span;
+        assert!(
+            (low - high - want).abs() < 1.0,
+            "{} of {want} px",
+            low - high
+        );
+
+        let drone: Vec<_> = (0..4)
+            .map(|i| (1.0 + i as f64 * 2.0, 57u8, 100, 2.0))
+            .collect();
+        let sc = sidecar(serde_json::json!([lane("Drone", &drone)]));
+        let mut av = new(&sc);
+        let centre = MELODY_BANDS[0].0 * 1080.0;
+        for i in 0..240 {
+            run(&mut av, i, i);
+            let y = ribbon(&av, 4).head.1;
+            assert!(
+                (y - centre).abs() < 1e-3,
+                "a drone moved to {y} at frame {i}"
+            );
+        }
+    }
+
+    /// A chord lane is classified chordal and drawn as dotted rings, where
+    /// the melody is drawn as lines, and its band widens with the voicing.
+    #[test]
+    fn chords_are_rings_that_spread_with_the_voicing() {
+        // One chord a bar: spans of 4, 7, 12 then 7 semitones.
+        let voicings: [[u8; 3]; 4] = [[60, 62, 64], [60, 64, 67], [60, 67, 72], [62, 66, 69]];
+        let chords: Vec<_> = voicings
+            .iter()
+            .enumerate()
+            .flat_map(|(i, v)| v.map(|p| (1.0 + i as f64 * 2.0, p, 100, 2.0)))
+            .collect();
+        let sc = sidecar(serde_json::json!([
+            lane("Pads", &chords),
+            lane("Flute", &flute(1.0, 8)),
+        ]));
+        let mut av = new(&sc);
+        let pads = av.lanes.iter().find(|l| l.name == "Pads").unwrap();
+        assert_eq!(pads.character, Character::Chordal);
+        assert!(matches!(pads.ribbon.as_ref().unwrap().form, Form::Chord(_)));
+        let melody = av.lanes.iter().find(|l| l.name == "Flute").unwrap();
+        assert!(matches!(
+            melody.ribbon.as_ref().unwrap().form,
+            Form::Melody(_)
+        ));
+
+        // Each spread settled, late in its bar.
+        let mut spread = Vec::new();
+        let mut from = 0;
+        for bar in 0..4 {
+            let to = ((2.8 + bar as f32 * 2.0) / DT) as usize;
+            run(&mut av, from, to);
+            from = to + 1;
+            let rb = ribbon(&av, 12);
+            spread.push(rb.r_hi.value() - rb.r_lo.value());
+        }
+        assert!(spread[0] < spread[1] && spread[1] < spread[2], "{spread:?}");
+        assert!((spread[1] - spread[3]).abs() < 0.5, "same span: {spread:?}");
+
+        // The two forms' primitives: chord dots, melody lines.
+        let fresh = || Layers {
+            acc: Vec::new(),
+            crisp: Vec::new(),
+            gain: [1.0, 1.0],
+        };
+        let kinds =
+            |l: &Layers| -> Vec<f32> { l.acc.iter().chain(&l.crisp).map(|p| p.kind[0]).collect() };
+        let mut chord = fresh();
+        assert!(draw_chord(&mut chord, ribbon(&av, 12), (960.0, 450.0), [1.0; 3]) > 0);
+        assert!(kinds(&chord).iter().all(|&k| k == 0.0), "chords are dots");
+        let mut line = fresh();
+        assert!(draw_melody(&mut line, ribbon(&av, 8), 0, [1.0; 3], 1.6, DT, 1.0) > 0);
+        let k = kinds(&line);
+        assert!(
+            k.iter().filter(|&&k| k == 1.0).count() * 2 > k.len(),
+            "melody is lines"
+        );
+    }
+
+    /// Every sustained lane has a label at its own place in the frame;
+    /// drums have none.
+    #[test]
+    fn sustained_lanes_have_labels() {
+        let mut av = new(&sidecar(afterimage_like()));
+        run(&mut av, 0, 60);
+        let labels = av.labels();
+        let mut names: Vec<&str> = labels.iter().map(|(n, _)| n.as_str()).collect();
+        names.sort_unstable();
+        assert_eq!(
+            names,
+            ["FX / ONE-SHOTS", "MAIN SYNTH", "SECONDARY SYNTH/CHRONOS"]
+        );
+        for (i, (_, a)) in labels.iter().enumerate() {
+            assert!(
+                (0.0..1920.0).contains(&a.0) && (0.0..1080.0).contains(&a.1),
+                "{a:?}"
+            );
+            for (_, b) in labels.iter().skip(i + 1) {
+                assert!((a.0 - b.0).abs() + (a.1 - b.1).abs() > 40.0, "{a:?} {b:?}");
+            }
         }
     }
 

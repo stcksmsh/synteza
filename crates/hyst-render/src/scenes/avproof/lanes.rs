@@ -4,7 +4,9 @@
 //! ribbon) only when all of these hold:
 //! - its name names no drum ([`drum_name`]);
 //! - its pitch moves: at least [`MIN_PITCHES`] distinct pitches, and the
-//!   pitch changes between at least [`MIN_PITCH_MOVES`] of consecutive notes;
+//!   pitch changes between at least [`MIN_PITCH_MOVES`] of consecutive notes.
+//!   A lane of one single pitch is exempt: held, it is a drone, drawn as a
+//!   flat melody ribbon;
 //! - its notes are long or legato: the time-weighted mean note length is at
 //!   least [`LONG_NOTE`] seconds, or the median note is at least
 //!   [`LEGATO_MIN_LEN`] seconds and lasts at least [`LEGATO_FILL`] of the gap
@@ -12,6 +14,17 @@
 //!
 //! Everything else, including every lane that is ambiguous between the two,
 //! is **percussive**: its hits push the scene around instead.
+//!
+//! A sustained lane is **chordal** (drawn as a band of rings around the core,
+//! not a melody ribbon) when more than [`CHORD_SHARE`] of its onsets carry two
+//! or more notes. Notes whose onsets lie within [`ONSET_TOGETHER`] seconds of
+//! the first note of a group count as one onset. A lane mixing chords and
+//! single notes is therefore chordal only if most of its onsets are chords.
+//!
+//! A melody ribbon maps its lane's own pitch range onto its band's height.
+//! A lane narrower than [`MELODY_MIN_RANGE`] semitones is mapped as if it
+//! spanned that many, centred: a 2-semitone lane moves over 2/6 of its band,
+//! never less. A lane of a single pitch is a flat line at the band's centre.
 
 /// Distinct pitches a sustained lane needs.
 pub const MIN_PITCHES: usize = 3;
@@ -23,6 +36,12 @@ pub const LONG_NOTE: f32 = 0.5;
 pub const LEGATO_MIN_LEN: f32 = 0.4;
 /// Median share of the gap to the next note a legato note fills.
 pub const LEGATO_FILL: f32 = 0.9;
+/// Share of onsets that must be chords (2+ notes) for a lane to be chordal.
+pub const CHORD_SHARE: f32 = 0.5;
+/// Onsets closer than this, seconds, start the same chord.
+pub const ONSET_TOGETHER: f32 = 0.03;
+/// Narrowest pitch range, semitones, a melody band is scaled to.
+pub const MELODY_MIN_RANGE: f32 = 6.0;
 
 #[derive(Clone, Copy, Debug)]
 pub struct Note {
@@ -34,7 +53,10 @@ pub struct Note {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Character {
+    /// Held single notes: a melody ribbon.
     Sustained,
+    /// Held chords: a band of rings.
+    Chordal,
     Percussive,
 }
 
@@ -86,19 +108,22 @@ pub fn drum_name(name: &str) -> Option<Drum> {
 
 /// The character of a lane from its name and notes (sorted by onset).
 pub fn classify(name: &str, notes: &[Note]) -> Character {
-    if drum_name(name).is_some() || notes.len() < 2 {
+    if drum_name(name).is_some() || notes.is_empty() {
         return Character::Percussive;
     }
     let mut pitches: Vec<u8> = notes.iter().map(|n| n.pitch).collect();
     pitches.sort_unstable();
     pitches.dedup();
-    let moves = notes
-        .windows(2)
-        .filter(|w| w[0].pitch != w[1].pitch)
-        .count() as f32
-        / (notes.len() - 1) as f32;
-    if pitches.len() < MIN_PITCHES || moves < MIN_PITCH_MOVES {
-        return Character::Percussive;
+    if pitches.len() > 1 {
+        // Two pitches mean at least two notes.
+        let moves = notes
+            .windows(2)
+            .filter(|w| w[0].pitch != w[1].pitch)
+            .count() as f32
+            / (notes.len() - 1) as f32;
+        if pitches.len() < MIN_PITCHES || moves < MIN_PITCH_MOVES {
+            return Character::Percussive;
+        }
     }
     let lens: Vec<f32> = notes.iter().map(|n| (n.end - n.t).max(0.0)).collect();
     let total: f32 = lens.iter().sum();
@@ -117,10 +142,24 @@ pub fn classify(name: &str, notes: &[Note]) -> Character {
     sorted.sort_by(f32::total_cmp);
     let median_len = sorted[sorted.len() / 2];
     let median_fill = fills.get(fills.len() / 2).copied().unwrap_or(0.0);
-    if weighted >= LONG_NOTE || (median_len >= LEGATO_MIN_LEN && median_fill >= LEGATO_FILL) {
-        Character::Sustained
+    if weighted < LONG_NOTE && (median_len < LEGATO_MIN_LEN || median_fill < LEGATO_FILL) {
+        return Character::Percussive;
+    }
+    let (mut onsets, mut chords) = (0usize, 0usize);
+    let mut i = 0;
+    while i < notes.len() {
+        let j = i + notes[i..]
+            .iter()
+            .take_while(|n| n.t - notes[i].t <= ONSET_TOGETHER)
+            .count();
+        onsets += 1;
+        chords += usize::from(j - i >= 2);
+        i = j;
+    }
+    if chords as f32 > CHORD_SHARE * onsets as f32 {
+        Character::Chordal
     } else {
-        Character::Percussive
+        Character::Sustained
     }
 }
 
@@ -182,6 +221,48 @@ mod tests {
                 "{name}"
             );
         }
+    }
+
+    /// One held pitch is a drone: sustained, so a flat melody ribbon.
+    #[test]
+    fn a_held_single_pitch_is_sustained() {
+        let drone: Vec<_> = (0..6).map(|i| (i as f32 * 2.0, 2.0, 57)).collect();
+        assert_eq!(classify("Pad", &notes(&drone)), Character::Sustained);
+        assert_eq!(
+            classify("Pad", &notes(&[(0.0, 4.0, 57)])),
+            Character::Sustained
+        );
+    }
+
+    /// Chords on most onsets make a lane chordal; a few chords in a line
+    /// do not.
+    #[test]
+    fn chords_on_most_onsets_are_chordal() {
+        let chord = |t: f32, root: u8| {
+            [
+                (t, 2.0, root),
+                (t, 2.0, root + 4),
+                (t + 0.01, 2.0, root + 7),
+            ]
+        };
+        let pad: Vec<_> = (0..6)
+            .flat_map(|i| chord(i as f32 * 2.0, 60 + i as u8))
+            .collect();
+        assert_eq!(classify("MAIN SYNTH", &notes(&pad)), Character::Chordal);
+        // Three chords and four single notes: mostly single, a melody.
+        let mut mixed: Vec<_> = (0..3)
+            .flat_map(|i| chord(i as f32 * 4.0, 60 + i as u8))
+            .collect();
+        mixed.extend((0..4).map(|i| (i as f32 * 4.0 + 2.0, 2.0, 70 + i as u8)));
+        mixed.sort_by(|a, b| a.0.total_cmp(&b.0));
+        assert_eq!(classify("Keys", &notes(&mixed)), Character::Sustained);
+        // Four chords and three single notes: mostly chords.
+        let mut mostly: Vec<_> = (0..4)
+            .flat_map(|i| chord(i as f32 * 4.0, 60 + i as u8))
+            .collect();
+        mostly.extend((0..3).map(|i| (i as f32 * 4.0 + 2.0, 2.0, 70 + i as u8)));
+        mostly.sort_by(|a, b| a.0.total_cmp(&b.0));
+        assert_eq!(classify("Keys", &notes(&mostly)), Character::Chordal);
     }
 
     #[test]

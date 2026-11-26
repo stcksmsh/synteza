@@ -238,7 +238,10 @@ fn main() {
 /// `SCENE_START` (s, default 0), `SCENE_SECONDS` (default: to the end),
 /// `SCENE_WIDTH`/`SCENE_HEIGHT` (default 960x540), `SCENE_CRF` (default 16),
 /// `SCENE_OUT` (default `test-output/scene_<scene>.mp4`). `MOOD` (`bright`,
-/// the default, or `dark`) sets avproof's mood.
+/// the default, or `dark`) sets avproof's mood. `LANE_LABELS=1` writes each
+/// sustained lane's name next to its avproof form (`0` or unset: none).
+/// `PITCH_TRACE=<csv>` writes each frame's avproof melody heads as
+/// `t,lane,y,level`, `y` in output pixels.
 fn run_scenes(scene: &str) {
     use hyst_render::scenes::avproof::{self, AvProofScene, Mood};
     use hyst_render::scenes::{switcher, SceneKind, SceneRenderer, SongTrack};
@@ -266,6 +269,18 @@ fn run_scenes(scene: &str) {
     };
     let mood = Mood::from_name(&mood_name)
         .unwrap_or_else(|| panic!("MOOD must be bright or dark, got {mood_name:?}"));
+    let lane_labels = match std::env::var("LANE_LABELS").as_deref() {
+        Err(std::env::VarError::NotPresent) | Ok("0") => false,
+        Ok("1") => true,
+        other => panic!("LANE_LABELS must be 0 or 1, got {other:?}"),
+    };
+    let mut pitch_trace = std::env::var_os("PITCH_TRACE").map(|p| {
+        let mut f = std::io::BufWriter::new(
+            std::fs::File::create(&p).unwrap_or_else(|e| panic!("create {p:?}: {e}")),
+        );
+        writeln!(f, "t,lane,y,level").expect("write PITCH_TRACE");
+        f
+    });
     let width: u32 = env_or("SCENE_WIDTH", 960);
     let height: u32 = env_or("SCENE_HEIGHT", 540);
     assert!(
@@ -311,10 +326,28 @@ fn run_scenes(scene: &str) {
         }
     }
 
-    let vf = if avproof {
-        avproof_text(&sidecar, &wav_path, height, start, seconds)
-    } else {
-        "null".to_string()
+    let ctx = GpuContext::new_blocking().expect("no GPU adapter available — cannot render");
+    let mut av = avproof.then(|| {
+        let wav = WavSource::load(&wav_path).expect("failed to load WAV");
+        let ch = wav.channels as usize;
+        let mono: Vec<f32> = wav
+            .samples
+            .chunks(ch)
+            .map(|f| f.iter().sum::<f32>() / ch as f32)
+            .collect();
+        let scene = AvProofScene::new(&ctx, width, height, &sidecar, wav.sample_rate as f32, mood);
+        (scene, mono, wav.sample_rate as f32)
+    });
+    let vf = match &av {
+        Some((scene, ..)) => {
+            let labels = if lane_labels {
+                scene.labels()
+            } else {
+                Vec::new()
+            };
+            avproof_text(&sidecar, &wav_path, height, start, seconds, &labels)
+        }
+        None => "null".to_string(),
     };
     let mut ffmpeg = std::process::Command::new("ffmpeg")
         .args(["-y", "-v", "error", "-f", "rawvideo", "-pix_fmt", "rgba"])
@@ -340,22 +373,10 @@ fn run_scenes(scene: &str) {
         .expect("failed to spawn ffmpeg");
     let mut pipe = ffmpeg.stdin.take().expect("ffmpeg stdin");
 
-    let ctx = GpuContext::new_blocking().expect("no GPU adapter available — cannot render");
     let mut renderer = SceneRenderer::new(&ctx, width, height);
     let mut song = SongTrack::new(&sidecar);
     let dt = 1.0 / fps;
     let frames = (seconds * fps).round() as usize;
-    let mut av = avproof.then(|| {
-        let wav = WavSource::load(&wav_path).expect("failed to load WAV");
-        let ch = wav.channels as usize;
-        let mono: Vec<f32> = wav
-            .samples
-            .chunks(ch)
-            .map(|f| f.iter().sum::<f32>() / ch as f32)
-            .collect();
-        let scene = AvProofScene::new(&ctx, width, height, &sidecar, wav.sample_rate as f32, mood);
-        (scene, mono, wav.sample_rate as f32)
-    });
     for i in 0..frames {
         let t = start + i as f32 * dt;
         let inputs = song.advance(t, dt);
@@ -366,6 +387,12 @@ fn run_scenes(scene: &str) {
                 .render(&ctx, &inputs, scope)
                 .expect("avproof render failed");
             pipe.write_all(&pixels).expect("write frame to ffmpeg");
+            if let Some(f) = &mut pitch_trace {
+                for (lane, (_, y), level) in scene.melody_heads() {
+                    let lane = lane.replace(',', " ");
+                    writeln!(f, "{t},{lane},{y},{level}").expect("write PITCH_TRACE");
+                }
+            }
             if i % 300 == 0 {
                 println!("frame {i}/{frames} (t {t:.1} s)");
             }
@@ -388,20 +415,25 @@ fn run_scenes(scene: &str) {
         }
     }
     drop(pipe);
+    if let Some(mut f) = pitch_trace {
+        f.flush().expect("write PITCH_TRACE");
+    }
     let status = ffmpeg.wait().expect("wait for ffmpeg");
     assert!(status.success(), "ffmpeg exited with {status}");
     println!("encoded {frames} frames to {}", out.display());
 }
 
 /// av_proof's text overlay as an ffmpeg filter: a muted line naming the
-/// track and what drives the picture, and a label for each named cue. Times
-/// are relative to the clip; sizes are av_proof's at 1080 lines, scaled.
+/// track and what drives the picture, a label for each named cue, and each
+/// of `lanes` (name, output pixel) written there. Times are relative to the
+/// clip; sizes are av_proof's at 1080 lines, scaled.
 fn avproof_text(
     sidecar: &hyst_core::Sidecar,
     wav: &std::path::Path,
     height: u32,
     start: f32,
     secs: f32,
+    lanes: &[(String, (f32, f32))],
 ) -> String {
     const MONO_FONT: &str = "/usr/share/fonts/truetype/ibm-plex/IBMPlexMono-Regular.ttf";
     assert!(
@@ -450,6 +482,17 @@ fn avproof_text(
         window(0.0, secs + 1.0),
         "white@0.45",
     ));
+    for (name, (x, y)) in lanes {
+        vf.push(text(
+            name,
+            fs(22.0),
+            // Kept inside the frame's right edge.
+            &format!("'min({},w-text_w-{})'", *x as i32, fs(24.0)),
+            &format!("{}", *y as i32),
+            "0.9".into(),
+            "white@0.9",
+        ));
+    }
     vf.join(",")
 }
 
