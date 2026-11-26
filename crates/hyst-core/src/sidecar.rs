@@ -137,6 +137,25 @@ pub struct SidecarRepeat {
     pub similarity: f32,
 }
 
+/// One note from a DAW lane (a track's MIDI or sampler items).
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct LaneEvent {
+    /// Note-on, seconds into the track.
+    pub t: f64,
+    pub pitch: u8,
+    pub velocity: u8,
+    /// Seconds; may be zero.
+    pub length: f64,
+}
+
+/// The notes of one DAW track, read from the project.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct Lane {
+    pub name: String,
+    pub kind: String,
+    pub events: Vec<LaneEvent>,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Sidecar {
@@ -167,6 +186,10 @@ pub struct Sidecar {
     /// they are the source of truth for bars, over `Downbeat` events.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub downbeats: Option<Vec<f64>>,
+    /// Per-track notes from the DAW project, when the sidecar was built
+    /// from one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lanes: Option<Vec<Lane>>,
 }
 
 impl Sidecar {
@@ -264,6 +287,39 @@ mod tests {
         );
         let with = Sidecar::from_json_str(&with).unwrap();
         assert_eq!(with.downbeats, Some(vec![0.0, 2.0, 4.0]));
+    }
+
+    #[test]
+    fn lanes_field_is_optional() {
+        let without = Sidecar::from_json_str(minimal_schema2_json()).unwrap();
+        assert_eq!(without.lanes, None);
+        let with = minimal_schema2_json().replacen(
+            "\"tempo\": 128.0,",
+            r#""tempo": 128.0, "lanes": [{"name": "KICK", "kind": "midi", "events": [
+                {"t": 12, "pitch": 24, "velocity": 127, "length": 0.25},
+                {"t": 12.5, "pitch": 24, "velocity": 90, "length": 0}]}],"#,
+            1,
+        );
+        let lanes = Sidecar::from_json_str(&with).unwrap().lanes.unwrap();
+        assert_eq!(lanes.len(), 1);
+        assert_eq!(lanes[0].name, "KICK");
+        assert_eq!(
+            lanes[0].events,
+            vec![
+                LaneEvent {
+                    t: 12.0,
+                    pitch: 24,
+                    velocity: 127,
+                    length: 0.25,
+                },
+                LaneEvent {
+                    t: 12.5,
+                    pitch: 24,
+                    velocity: 90,
+                    length: 0.0,
+                },
+            ]
+        );
     }
 
     #[test]

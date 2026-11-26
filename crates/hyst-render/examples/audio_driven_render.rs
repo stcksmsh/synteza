@@ -30,6 +30,8 @@
 //!
 //! `SCENE=grid|growth|feedback|auto` renders the non-fractal sketch scenes
 //! instead (see `run_scenes`); with `SCENE` unset nothing above changes.
+//! `SCENE=avproof` renders kabl's av_proof look from the sidecar's lanes,
+//! with its text overlay; `SCENE_FPS` (default 30) sets the frame rate.
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -235,14 +237,20 @@ fn main() {
 ///
 /// `SCENE_START` (s, default 0), `SCENE_SECONDS` (default: to the end),
 /// `SCENE_WIDTH`/`SCENE_HEIGHT` (default 960x540), `SCENE_CRF` (default 16),
-/// `SCENE_OUT` (default `test-output/scene_<scene>.mp4`).
+/// `SCENE_OUT` (default `test-output/scene_<scene>.mp4`). `MOOD` (`bright`,
+/// the default, or `dark`) sets avproof's mood. `LANE_LABELS=1` writes each
+/// sustained lane's name next to its avproof form (`0` or unset: none).
+/// `PITCH_TRACE=<csv>` writes each frame's avproof melody heads as
+/// `t,lane,y,level`, `y` in output pixels.
 fn run_scenes(scene: &str) {
+    use hyst_render::scenes::avproof::{self, AvProofScene, Mood};
     use hyst_render::scenes::{switcher, SceneKind, SceneRenderer, SongTrack};
 
+    let avproof = scene == "avproof";
     let fixed = match scene {
-        "auto" => None,
+        "auto" | "avproof" => None,
         name => Some(SceneKind::from_name(name).unwrap_or_else(|| {
-            panic!("SCENE must be grid, growth, feedback or auto, got {name:?}")
+            panic!("SCENE must be grid, growth, feedback, auto or avproof, got {name:?}")
         })),
     };
     let wav_path = std::env::args()
@@ -254,6 +262,25 @@ fn run_scenes(scene: &str) {
         .unwrap_or_else(|e| panic!("read {sidecar_path}: {e}"));
     let sidecar = hyst_core::Sidecar::from_json_str(&json)
         .unwrap_or_else(|e| panic!("parse {sidecar_path}: {e}"));
+    let mood_name = match std::env::var("MOOD") {
+        Ok(v) => v,
+        Err(std::env::VarError::NotPresent) => "bright".into(),
+        Err(e) => panic!("MOOD: {e}"),
+    };
+    let mood = Mood::from_name(&mood_name)
+        .unwrap_or_else(|| panic!("MOOD must be bright or dark, got {mood_name:?}"));
+    let lane_labels = match std::env::var("LANE_LABELS").as_deref() {
+        Err(std::env::VarError::NotPresent) | Ok("0") => false,
+        Ok("1") => true,
+        other => panic!("LANE_LABELS must be 0 or 1, got {other:?}"),
+    };
+    let mut pitch_trace = std::env::var_os("PITCH_TRACE").map(|p| {
+        let mut f = std::io::BufWriter::new(
+            std::fs::File::create(&p).unwrap_or_else(|e| panic!("create {p:?}: {e}")),
+        );
+        writeln!(f, "t,lane,y,level").expect("write PITCH_TRACE");
+        f
+    });
     let width: u32 = env_or("SCENE_WIDTH", 960);
     let height: u32 = env_or("SCENE_HEIGHT", 540);
     assert!(
@@ -268,6 +295,8 @@ fn run_scenes(scene: &str) {
         "SCENE_START {start} + SCENE_SECONDS {seconds} must lie inside the track ({duration} s)"
     );
     let crf: u32 = env_or("SCENE_CRF", 16);
+    let fps: f32 = env_or("SCENE_FPS", FPS);
+    assert!(fps > 0.0, "SCENE_FPS must be positive, got {fps}");
     let out = std::env::var_os("SCENE_OUT")
         .map(PathBuf::from)
         .unwrap_or_else(|| {
@@ -280,7 +309,7 @@ fn run_scenes(scene: &str) {
     }
 
     let sections = switcher::sections_from_sidecar(&sidecar);
-    if fixed.is_none() {
+    if fixed.is_none() && !avproof {
         println!("section -> scene");
         for (i, s) in sections.iter().enumerate() {
             println!(
@@ -297,9 +326,32 @@ fn run_scenes(scene: &str) {
         }
     }
 
+    let ctx = GpuContext::new_blocking().expect("no GPU adapter available — cannot render");
+    let mut av = avproof.then(|| {
+        let wav = WavSource::load(&wav_path).expect("failed to load WAV");
+        let ch = wav.channels as usize;
+        let mono: Vec<f32> = wav
+            .samples
+            .chunks(ch)
+            .map(|f| f.iter().sum::<f32>() / ch as f32)
+            .collect();
+        let scene = AvProofScene::new(&ctx, width, height, &sidecar, wav.sample_rate as f32, mood);
+        (scene, mono, wav.sample_rate as f32)
+    });
+    let vf = match &av {
+        Some((scene, ..)) => {
+            let labels = if lane_labels {
+                scene.labels()
+            } else {
+                Vec::new()
+            };
+            avproof_text(&sidecar, &wav_path, height, start, seconds, &labels)
+        }
+        None => "null".to_string(),
+    };
     let mut ffmpeg = std::process::Command::new("ffmpeg")
         .args(["-y", "-v", "error", "-f", "rawvideo", "-pix_fmt", "rgba"])
-        .args(["-s", &format!("{width}x{height}"), "-r", &FPS.to_string()])
+        .args(["-s", &format!("{width}x{height}"), "-r", &fps.to_string()])
         .args([
             "-i",
             "-",
@@ -311,7 +363,7 @@ fn run_scenes(scene: &str) {
         .arg("-i")
         .arg(&wav_path)
         .args([
-            "-map", "0:v", "-map", "1:a", "-c:v", "libx264", "-preset", "medium",
+            "-map", "0:v", "-map", "1:a", "-vf", &vf, "-c:v", "libx264", "-preset", "medium",
         ])
         .args(["-crf", &crf.to_string(), "-pix_fmt", "yuv420p"])
         .args(["-c:a", "aac", "-b:a", "160k", "-shortest"])
@@ -321,14 +373,31 @@ fn run_scenes(scene: &str) {
         .expect("failed to spawn ffmpeg");
     let mut pipe = ffmpeg.stdin.take().expect("ffmpeg stdin");
 
-    let ctx = GpuContext::new_blocking().expect("no GPU adapter available — cannot render");
     let mut renderer = SceneRenderer::new(&ctx, width, height);
     let mut song = SongTrack::new(&sidecar);
-    let dt = 1.0 / FPS;
-    let frames = (seconds * FPS).round() as usize;
+    let dt = 1.0 / fps;
+    let frames = (seconds * fps).round() as usize;
     for i in 0..frames {
         let t = start + i as f32 * dt;
         let inputs = song.advance(t, dt);
+        if let Some((scene, mono, rate)) = &mut av {
+            let end = ((t * *rate) as usize).min(mono.len());
+            let scope = &mono[end.saturating_sub(avproof::SCOPE)..end];
+            let pixels = scene
+                .render(&ctx, &inputs, scope)
+                .expect("avproof render failed");
+            pipe.write_all(&pixels).expect("write frame to ffmpeg");
+            if let Some(f) = &mut pitch_trace {
+                for (lane, (_, y), level) in scene.melody_heads() {
+                    let lane = lane.replace(',', " ");
+                    writeln!(f, "{t},{lane},{y},{level}").expect("write PITCH_TRACE");
+                }
+            }
+            if i % 300 == 0 {
+                println!("frame {i}/{frames} (t {t:.1} s)");
+            }
+            continue;
+        }
         let weights = match fixed {
             Some(kind) => {
                 let mut w = [0.0; 3];
@@ -346,9 +415,85 @@ fn run_scenes(scene: &str) {
         }
     }
     drop(pipe);
+    if let Some(mut f) = pitch_trace {
+        f.flush().expect("write PITCH_TRACE");
+    }
     let status = ffmpeg.wait().expect("wait for ffmpeg");
     assert!(status.success(), "ffmpeg exited with {status}");
     println!("encoded {frames} frames to {}", out.display());
+}
+
+/// av_proof's text overlay as an ffmpeg filter: a muted line naming the
+/// track and what drives the picture, a label for each named cue, and each
+/// of `lanes` (name, output pixel) written there. Times are relative to the
+/// clip; sizes are av_proof's at 1080 lines, scaled.
+fn avproof_text(
+    sidecar: &hyst_core::Sidecar,
+    wav: &std::path::Path,
+    height: u32,
+    start: f32,
+    secs: f32,
+    lanes: &[(String, (f32, f32))],
+) -> String {
+    const MONO_FONT: &str = "/usr/share/fonts/truetype/ibm-plex/IBMPlexMono-Regular.ttf";
+    assert!(
+        std::path::Path::new(MONO_FONT).is_file(),
+        "avproof's text needs {MONO_FONT}"
+    );
+    let fs = |x: f32| (x * height as f32 / 1080.0) as u32;
+    let window = |a: f32, b: f32| {
+        format!("if(lt(t,{a}),0,if(lt(t,{a}+0.6),(t-{a})/0.6,if(lt(t,{b}-0.8),1,if(lt(t,{b}),({b}-t)/0.8,0))))")
+    };
+    let text = |s: &str, size: u32, x: &str, y: &str, alpha: String, col: &str| {
+        let s = s.replace(['\'', ':', '\\', '%'], "");
+        format!("drawtext=fontfile={MONO_FONT}:text='{s}':fontsize={size}:fontcolor={col}:x={x}:y={y}:alpha='{alpha}'")
+    };
+    let mut vf = Vec::new();
+    let cues = hyst_render::scenes::avproof::cues(sidecar);
+    for (k, cue) in cues.iter().enumerate() {
+        let Some(name) = &cue.label else { continue };
+        let a = (cue.start - start).max(0.0);
+        let next = cues.get(k + 1).map_or(secs, |n| n.start - start);
+        // A cue that ended before the clip starts gets no label.
+        if next <= 0.0 || a >= secs {
+            continue;
+        }
+        let b = next.max(a + 2.0).min(a + 5.0);
+        vf.push(text(
+            &format!("cue {}  ·  {name}", k + 1),
+            fs(30.0),
+            &fs(56.0).to_string(),
+            &format!("h-{}", fs(72.0)),
+            window(a, b),
+            "white@0.85",
+        ));
+    }
+    let track = wav
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_default();
+    vf.push(text(
+        &format!(
+            "track  {track}   ·   offline render   ·   visuals from notes, beats, bars, sections"
+        ),
+        fs(18.0),
+        &format!("w-text_w-{}", fs(48.0)),
+        &fs(40.0).to_string(),
+        window(0.0, secs + 1.0),
+        "white@0.45",
+    ));
+    for (name, (x, y)) in lanes {
+        vf.push(text(
+            name,
+            fs(22.0),
+            // Kept inside the frame's right edge.
+            &format!("'min({},w-text_w-{})'", *x as i32, fs(24.0)),
+            &format!("{}", *y as i32),
+            "0.9".into(),
+            "white@0.9",
+        ));
+    }
+    vf.join(",")
 }
 
 fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
