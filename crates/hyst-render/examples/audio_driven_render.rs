@@ -237,9 +237,10 @@ fn main() {
 ///
 /// `SCENE_START` (s, default 0), `SCENE_SECONDS` (default: to the end),
 /// `SCENE_WIDTH`/`SCENE_HEIGHT` (default 960x540), `SCENE_CRF` (default 16),
-/// `SCENE_OUT` (default `test-output/scene_<scene>.mp4`).
+/// `SCENE_OUT` (default `test-output/scene_<scene>.mp4`). `MOOD` (`bright`,
+/// the default, or `dark`) sets avproof's mood.
 fn run_scenes(scene: &str) {
-    use hyst_render::scenes::avproof::{self, AvProofScene};
+    use hyst_render::scenes::avproof::{self, AvProofScene, Mood};
     use hyst_render::scenes::{switcher, SceneKind, SceneRenderer, SongTrack};
 
     let avproof = scene == "avproof";
@@ -258,6 +259,9 @@ fn run_scenes(scene: &str) {
         .unwrap_or_else(|e| panic!("read {sidecar_path}: {e}"));
     let sidecar = hyst_core::Sidecar::from_json_str(&json)
         .unwrap_or_else(|e| panic!("parse {sidecar_path}: {e}"));
+    let mood_name = std::env::var("MOOD").unwrap_or_else(|_| "bright".into());
+    let mood = Mood::from_name(&mood_name)
+        .unwrap_or_else(|| panic!("MOOD must be bright or dark, got {mood_name:?}"));
     let width: u32 = env_or("SCENE_WIDTH", 960);
     let height: u32 = env_or("SCENE_HEIGHT", 540);
     assert!(
@@ -345,7 +349,7 @@ fn run_scenes(scene: &str) {
             .chunks(ch)
             .map(|f| f.iter().sum::<f32>() / ch as f32)
             .collect();
-        let scene = AvProofScene::new(&ctx, width, height, &sidecar, wav.sample_rate as f32);
+        let scene = AvProofScene::new(&ctx, width, height, &sidecar, wav.sample_rate as f32, mood);
         (scene, mono, wav.sample_rate as f32)
     });
     for i in 0..frames {
