@@ -259,7 +259,11 @@ fn run_scenes(scene: &str) {
         .unwrap_or_else(|e| panic!("read {sidecar_path}: {e}"));
     let sidecar = hyst_core::Sidecar::from_json_str(&json)
         .unwrap_or_else(|e| panic!("parse {sidecar_path}: {e}"));
-    let mood_name = std::env::var("MOOD").unwrap_or_else(|_| "bright".into());
+    let mood_name = match std::env::var("MOOD") {
+        Ok(v) => v,
+        Err(std::env::VarError::NotPresent) => "bright".into(),
+        Err(e) => panic!("MOOD: {e}"),
+    };
     let mood = Mood::from_name(&mood_name)
         .unwrap_or_else(|| panic!("MOOD must be bright or dark, got {mood_name:?}"));
     let width: u32 = env_or("SCENE_WIDTH", 960);
